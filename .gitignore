@@ -1,3 +1,16 @@
+*.egg-info
+.venv
+*.ipynb
+*.pyc
+.ipynb_checkpoints
+
+# editors
+.vscode
+*.swp
+
+# OS-specific
+.DS_Store
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
