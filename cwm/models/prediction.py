@@ -65,7 +65,10 @@ class PredictorBasedGenerator(nn.Module):
             raise ValueError("There is no predictor set for this generator and no model to load to")
         
         if load_path is None:
-            print("No predictor weights were loaded")
+            print(
+                ("No predictor weights were loaded in constructing the %s\n" +\
+                "This is fine as long as you already loaded the weights!") % \
+                type(self).__name__)
             if hasattr(self.predictor, '_predictor_load_path'):
                 self._predictor_load_path = self.predictor._predictor_load_path
             return
