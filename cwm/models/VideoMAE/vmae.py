@@ -20,12 +20,6 @@ from .utils import (Block,
                     get_sinusoid_encoding_table
                     )
 
-# import cwm.models.transformer as transformer
-# import cwm.models.preprocessor as preproc
-# import cwm.models.masking as masking
-
-PRINT_PADDING = False
-
 def trunc_normal_(tensor, mean=0., std=1.):
     __call_trunc_normal_(tensor, mean=mean, std=std, a=-std, b=std)
 
