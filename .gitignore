@@ -2,7 +2,13 @@
 .venv
 *.ipynb
 *.pyc
+*.py~
+*.py#
 .ipynb_checkpoints
+
+# pytorch tensors and model weights
+*.pth
+*.pt
 
 # editors
 .vscode
