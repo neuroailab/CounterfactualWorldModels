@@ -4,8 +4,8 @@ An approach to building pure vision foundation models by prompting masked predic
 ## Setup
 We recommend installing required packages in a virtual environment, e.g. with venv or conda.
 
-1. clone the repo with `git clone git@github.com:neuroailab/CounterfactualWorldModels.git`
-2. cd CounterfactualWorldModels && pip install -e .
+1. clone the repo: `git clone git@github.com:neuroailab/CounterfactualWorldModels.git`
+2. install requirements and `cwm` package: `cd CounterfactualWorldModels && pip install -e .`
 
 ### Pretrained Models
 Weights are currently available for two VMAEs trained with the _temporall-factored masking policy_:
