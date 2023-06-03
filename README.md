@@ -4,7 +4,7 @@ An approach to building pure vision foundation models by prompting masked predic
 ## Setup
 We recommend installing required packages in a virtual environment, e.g. with venv or conda.
 
-1. clone the repo: `git clone git@github.com:neuroailab/CounterfactualWorldModels.git`
+1. clone the repo: `git clone https://github.com/neuroailab/CounterfactualWorldModels.git`
 2. install requirements and `cwm` package: `cd CounterfactualWorldModels && pip install -e .`
 
 ### Pretrained Models
