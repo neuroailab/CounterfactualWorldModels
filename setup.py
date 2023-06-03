@@ -92,7 +92,10 @@ setup(
         'opencv-python',
         'iopath',
         'IPython',
-        'jupyter'
+        'jupyter',
+        'jupyterlab',
+        'jupyter-client==7.3.1',
+        'tornado==6.1'
     ],
 )
 
