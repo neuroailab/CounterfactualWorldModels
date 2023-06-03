@@ -180,7 +180,16 @@ class PatchEmbed(nn.Module):
         # FIXME look at relaxing size constraints
         assert H == self.img_size[0] and W == self.img_size[1], \
             f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
-        x = self.proj(x).flatten(2).transpose(1, 2)
+
+        # Conv3D isn't implemented in mps
+        if x.device.type == 'mps':
+            t, h, w = self.proj.weight.shape[-3:]
+            x_slices = [_x.view(B, C * t, H, W) for _x in torch.split(x, [t]*(T // t), dim=2)]
+            weights = self.proj.weight.view(-1, self.proj.weight.size(1) * t, h, w)
+            x_out = [F.conv2d(_x, weight=weights, bias=self.proj.bias, stride=(h, w)) for _x in x_slices]
+            x = torch.stack(x_out, 2).flatten(2).transpose(1, 2)
+        else:
+            x = self.proj(x).flatten(2).transpose(1, 2)
         return x
     
 # sin-cos position encoding
