@@ -29,6 +29,7 @@ class PredictorBasedGenerator(nn.Module):
                  seed=0,
                  mask_generator=None,
                  raft_iters=None,
+                 max_shift_fraction=0.15,
                  **kwargs
     ):
         super().__init__()
@@ -43,8 +44,24 @@ class PredictorBasedGenerator(nn.Module):
         self.torch_rng = torch.manual_seed(seed)
         self.seed = seed
 
+        ## submodules
         self.mask_generator = mask_generator
         self.mask_rectangularizer = masking.RectangularizeMasks('min')
+        self.make_static = perturbation.MakeStatic(
+            patch_size=self.predictor.patch_size)
+        self.shifter = perturbation.ShiftPatchesAndMask(
+            patch_size=self.predictor.patch_size,
+            padding_mode='constant',
+            max_shift_fraction=max_shift_fraction,
+            allow_fractional_shifts=False
+        )
+        self.multi_patch_shifter = perturbation.MultiShiftPatchesAndMask(
+            patch_size=self.predictor.patch_size,
+            max_shift_fraction=max_shift_fraction,
+            padding_mode='constant',
+            allow_fractional_shifts=True
+        )
+        
 
         self.x, self.mask, self.timestamps = None, None, None
 
@@ -258,7 +275,7 @@ class PredictorBasedGenerator(nn.Module):
             assert list(fill_value.shape) == list(out.shape)
             out = out + (1 - mask_vis.unsqueeze(2)) * fill_value
         elif fill_value is not None:
-            fill_value = torch.tensor(fill_value).to(out.device).to(out)
+            fill_value = torch.tensor(fill_value, dtype=torch.float32).to(out.device).to(out)
             fill_value = fill_value.view(1,1,-1,1,1)
             out = out + (1 - mask_vis.unsqueeze(2)) * fill_value
         return out
@@ -310,7 +327,7 @@ class PredictorBasedGenerator(nn.Module):
             gt
         ).sum(dim, True)
 
-    def predict_error(x=None, mask=None, target=None, frame=None, dim=-3):
+    def predict_error(self, x=None, mask=None, target=None, frame=None, dim=-3):
         if x is None:
             x = self.x
         if mask is None:
@@ -318,7 +335,7 @@ class PredictorBasedGenerator(nn.Module):
         x_pred = self.predict(x, mask, frame=frame)
         if target is None:
             target = x
-        if frame is None:
+        if frame is not None:
             target = target[:,frame].unsqueeze(1)
             
         error = self.error_func(x_pred, target).sum(dim, True)
@@ -697,12 +714,61 @@ class PredictorBasedGenerator(nn.Module):
         self.mask_generator.num_visible = _num_vis
         return masks
 
-    def predict_value_map(self, x, *args, **kwargs):
-        assert len(x.shape) == 5, x.shape
-        if self.value_predictor is None:
-            return torch.ones_like(x[:,0:1,0:1])
-        value = self.value_predictor(x, *args, **kwargs)
-        return value
+    def _shift(self, x, mask, active_patches=None, shift=None, frame=1):
+        if getattr(self, 'shifts', None) is None:
+            self.shifts = []
+        if active_patches is None:
+            active_patches = torch.ones_like(mask)
+        points = ~active_patches
+        x_shift, mask_shift = self.shifter(
+            x,
+            mask=torch.minimum(mask, active_patches),
+            mask_shift=shift,
+            perturbation_points=points,
+            frame=frame)
+        mask_shift = self.mask_rectangularizer(mask_shift)
+
+        self.shift = self.shifter.shift
+        self.shift = [self.shift[0] // self.patch_size[-2],
+                      self.shift[1] // self.patch_size[-1]]
+        self.shifts.append(np.array(self.shift))
+
+        return (x_shift, mask_shift)
+
+    def get_counterfactual_prediction(self,
+                                      x,
+                                      mask=None,
+                                      active_patches=None,
+                                      shift=None,
+                                      fix_passive=False,
+                                      **kwargs):
+
+        ## make into a 2-frame movie
+        if len(x.shape) == 4:
+            x = x[:,None]
+        elif len(x.shape) == 3:
+            x = x[None,None]
+                
+        if x.size(1) == 1:
+            x = self.make_static_movie(x, T=2)
+            
+        if mask is None:
+            mask = self.get_zeros_mask(x)
+        if active_patches is None:
+            active_patches = self.get_zeros_mask(x)
+        if fix_passive:
+            x, _ = self.make_static(x, mask)
+
+        x_p, mask_p = self._shift(
+            x,
+            mask=mask,
+            active_patches=active_patches,
+            shift=shift,
+            frame=1
+        )
+
+        y_p = self.predict(x_p, mask_p, frame=None, **kwargs)
+        return y_p
 
     def forward(self, x, mask=None, frame=None, *args, **kwargs):
 
