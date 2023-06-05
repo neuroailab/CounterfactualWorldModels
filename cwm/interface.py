@@ -478,7 +478,7 @@ class CounterfactualPredictionInterface(object):
                 i,j,mask=self.passive_patches, t=((self.frame or 0)+1))
         elif str(event.key).upper() == 'SHIFT':
             self._store_current_patches()
-            self._reset_dmasks()
+            self._reset_masks()
             self._reset_flow_samples_list()
             self._reset_flow_errors_list()
             self._corrmat_inds_list = []
