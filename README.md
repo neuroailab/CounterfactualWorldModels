@@ -18,6 +18,12 @@ See demo jupyter notebooks for urls to download these weights and load them into
 
 Run the jupyter notebook `CounterfactualWorldModels/demo/FactualAndCounterfactual.ipynb`
 
+#### factual predictions
+![image](./demo/predictions/factual_predictions.png)
+
+#### counterfactual predictions
+![image](./demo/predictions/counterfactual_predictions.png)
+
 ## Coming Soon!
 - [ ] Run counterfactual simulations (a.k.a. predictions) on user-supplied images
 - [ ] Head-motion (i.e. IMU)-conditioned prediction models
