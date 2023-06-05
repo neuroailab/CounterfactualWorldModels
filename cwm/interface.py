@@ -462,7 +462,7 @@ class CounterfactualPredictionInterface(object):
         self.txt = txt
 
         ## enable setting the shift by dragging
-        self.do_drag = ('RIGHT' in str(event.button)) or (str(event.key).upper() == 'D')
+        self.do_drag = (str(event.key).upper() == 'D')
         self.press_loc = (event.xdata, event.ydata)
         if bool(event.dblclick) and self.do_drag:
             self.shift = self.press_loc = None
@@ -473,7 +473,7 @@ class CounterfactualPredictionInterface(object):
         if (event.key is None) and not self.do_drag:
             self.active_patches = self._add_patch(
                 i,j,mask=self.active_patches,t=((self.frame or 0)+1))
-        elif str(event.key).upper() == 'META':
+        elif (str(event.key).upper() == 'META') or ('RIGHT' in str(event.button).upper()):
             self.passive_patches = self._add_patch(
                 i,j,mask=self.passive_patches, t=((self.frame or 0)+1))
         elif str(event.key).upper() == 'SHIFT':
