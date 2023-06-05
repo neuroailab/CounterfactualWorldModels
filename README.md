@@ -14,7 +14,7 @@ Weights are currently available for two VMAEs trained with the _temporall-factor
 
 See demo jupyter notebooks for urls to download these weights and load them into VMAEs.
 
-## Run a demo of making factual predictions
+## Run a demo of making factual and counterfactual predictions
 
 Run the jupyter notebook `CounterfactualWorldModels/demo/FactualAndCounterfactual.ipynb`
 
