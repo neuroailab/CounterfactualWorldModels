@@ -470,10 +470,12 @@ class CounterfactualPredictionInterface(object):
             self.imshow(self.ax, self._make_mask_img(), 'reset_shift')            
             return
 
-        if (event.key is None) and not self.do_drag:
+        self.button = str(event.button).upper()
+
+        if (event.key is None) and ('RIGHT' not in self.button) and not self.do_drag:
             self.active_patches = self._add_patch(
                 i,j,mask=self.active_patches,t=((self.frame or 0)+1))
-        elif (str(event.key).upper() == 'META') or ('RIGHT' in str(event.button).upper()):
+        elif (str(event.key).upper() == 'META') or ('RIGHT' in self.button):
             self.passive_patches = self._add_patch(
                 i,j,mask=self.passive_patches, t=((self.frame or 0)+1))
         elif str(event.key).upper() == 'SHIFT':
