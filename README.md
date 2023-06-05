@@ -18,6 +18,9 @@ See demo jupyter notebooks for urls to download these weights and load them into
 
 Run the jupyter notebook `CounterfactualWorldModels/demo/FactualAndCounterfactual.ipynb`
 
+#### factual predictions
+![image](./demo/predictions/factual_predictions.png)
+
 #### counterfactual predictions
 ![image](./demo/predictions/counterfactual_predictions.png)
 
