@@ -84,6 +84,7 @@ setup(
         'h5py',
         'torch',
         'torchvision',
+        'av',
         'torchaudio',
         'timm',
         'kornia',
