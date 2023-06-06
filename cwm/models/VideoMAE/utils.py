@@ -184,7 +184,7 @@ class PatchEmbed(nn.Module):
         # Conv3D isn't implemented in mps
         if x.device.type == 'mps':
             t, h, w = self.proj.weight.shape[-3:]
-            x_slices = [_x.view(B, C * t, H, W) for _x in torch.split(x, [t]*(T // t), dim=2)]
+            x_slices = [_x.reshape(B, C * t, H, W) for _x in torch.split(x, [t]*(T // t), dim=2)]
             weights = self.proj.weight.view(-1, self.proj.weight.size(1) * t, h, w)
             x_out = [F.conv2d(_x, weight=weights, bias=self.proj.bias, stride=(h, w)) for _x in x_slices]
             x = torch.stack(x_out, 2).flatten(2).transpose(1, 2)
