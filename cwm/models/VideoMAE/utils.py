@@ -178,8 +178,13 @@ class PatchEmbed(nn.Module):
     def forward(self, x, **kwargs):
         B, C, T, H, W = x.shape
         # FIXME look at relaxing size constraints
-        assert H == self.img_size[0] and W == self.img_size[1], \
-            f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+        # assert H == self.img_size[0] and W == self.img_size[1], \
+        #     f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+        assert (H % self.proj.weight.size(-2) == 0) and (W % self.proj.weight.size(-1) == 0), \
+            f"Input image size({H},{W}) must be divisible by patch size " + \
+            f"({self.proj.weight.size(-2)},{self.proj.weight.size(-1)})"
+
+
 
         # Conv3D isn't implemented in mps
         if x.device.type == 'mps':
