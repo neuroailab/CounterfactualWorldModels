@@ -158,6 +158,27 @@ class FlowGenerator(PredictorBasedGenerator):
         ys = ys.view(-1,S,*ys.shape[1:]).permute(0,*p_dims,1)
         flows = flows.view(-1,S,*flows.shape[1:]).permute(0,*p_dims,1)
         return (ys, flows)
-        
+
+    def shift_samples(self,
+                      x,
+                      masks,
+                      active_patches=None,
+                      shift=None,
+                      frame=1,
+                      fix_passive=False):
+        """
+        Apply motion counterfactuals to x and mask
+        """
+        if active_patches is None:
+            active_patches = torch.ones_like(masks)
+            
+        motion_points = ~active_patches
+        B, N, S = masks.shape
+        assert motion_points.size(-1) in [1, S]
+        if motion_points.size(-1) == 1:
+            motion_points = motion_points.expand(-1, -1, S)
+
+        pass
+
                  
                  
