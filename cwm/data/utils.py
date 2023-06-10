@@ -18,7 +18,7 @@ class RgbFlowToXY(object):
 
 class FlowToRgb(object):
 
-    def __init__(self, max_speed=1.0, from_image_coordinates=True, from_sampling_grid=False):
+    def __init__(self, max_speed=1.0, from_image_coordinates=False, from_sampling_grid=True):
         self.max_speed = max_speed
         self.from_image_coordinates = from_image_coordinates
         self.from_sampling_grid = from_sampling_grid
