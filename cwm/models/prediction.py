@@ -38,7 +38,6 @@ class PredictorBasedGenerator(nn.Module):
         self.error_func = error_func
         self.imagenet_normalize_inputs = imagenet_normalize_inputs
         self.set_temporal_dim(temporal_dim)
-        # self.set_raft_iters(raft_iters)
 
         self.rng = np.random.RandomState(seed=seed)
         self.torch_rng = torch.manual_seed(seed)
@@ -70,12 +69,6 @@ class PredictorBasedGenerator(nn.Module):
         self.load_predictor(predictor_load_path, model=None)
         self.patchify = Patchify(self.patch_size, temporal_dim=1, squeeze_channel_dim=True)
         self.x = self.mask = self.inp_shape = None
-
-    # def set_raft_iters(self, iters=None):
-    #     for m in self.modules():
-    #         if isinstance(m, RAFT):
-    #             print("set RAFT to %s iters" % str(iters))
-    #             m.iters = iters
 
     def load_predictor(self, load_path=None, model=None, map_location='cpu'):
         if (getattr(self, 'predictor', None) is None) and (model is None):
