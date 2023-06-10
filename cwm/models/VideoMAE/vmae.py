@@ -55,6 +55,7 @@ class PretrainVisionTransformerEncoder(nn.Module):
                 for _ in range(num_embeddings)])
             num_patches = self.patch_embed[0].num_patches * num_embeddings
 
+        self.image_size = img_size
         self.num_patches = num_patches
         self.num_frames = num_frames
         print("NUM PATCHES IN ENCODER", self.num_patches)
