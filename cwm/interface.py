@@ -498,9 +498,9 @@ class CounterfactualPredictionInterface(object):
                     mask=self.passive_patches,
                     shift=shift,
                     fix_passive=False)
-                self.out = [3,3]
+                if (flow is None) and hasattr(self.G, 'predict_flow'):
+                    flow = self.G.predict_flow(y)
 
-                print("y", y.shape)
                 self.y, self.flow = y, flow
 
             if flow is not None:
