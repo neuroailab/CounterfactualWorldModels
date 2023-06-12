@@ -1,6 +1,5 @@
 *.egg-info
 .venv
-*.ipynb
 *.pyc
 *.py~
 *.py#

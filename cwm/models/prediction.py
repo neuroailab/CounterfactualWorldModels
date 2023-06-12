@@ -38,7 +38,6 @@ class PredictorBasedGenerator(nn.Module):
         self.error_func = error_func
         self.imagenet_normalize_inputs = imagenet_normalize_inputs
         self.set_temporal_dim(temporal_dim)
-        # self.set_raft_iters(raft_iters)
 
         self.rng = np.random.RandomState(seed=seed)
         self.torch_rng = torch.manual_seed(seed)
@@ -70,12 +69,6 @@ class PredictorBasedGenerator(nn.Module):
         self.load_predictor(predictor_load_path, model=None)
         self.patchify = Patchify(self.patch_size, temporal_dim=1, squeeze_channel_dim=True)
         self.x = self.mask = self.inp_shape = None
-
-    # def set_raft_iters(self, iters=None):
-    #     for m in self.modules():
-    #         if isinstance(m, RAFT):
-    #             print("set RAFT to %s iters" % str(iters))
-    #             m.iters = iters
 
     def load_predictor(self, load_path=None, model=None, map_location='cpu'):
         if (getattr(self, 'predictor', None) is None) and (model is None):
@@ -473,8 +466,25 @@ class PredictorBasedGenerator(nn.Module):
         rank = len(z.shape)
         return z[:,None].expand(-1,S,*([-1]*(rank-1))).reshape(-1,*z.shape[1:])
 
-    def batch_predict_per_sample(self, x, masks, frame=-1, batch_size=None, **kwargs):
-        S = masks.size(-1)
+    def sample_tile_all_tensors(self, num_samples, **kwargs):
+        S = num_samples
+        return {
+            kw:
+            self.sample_tile(val, S) if isinstance(val, torch.Tensor) else val
+            for kw, val in kwargs.items()
+        }
+
+    def batch_predict_per_sample(self,
+                                 x,
+                                 masks,
+                                 frame=-1,
+                                 batch_size=None,
+                                 sample_dim=None,
+                                 **kwargs):
+        if sample_dim != 0:
+            S = masks.size(-1)
+        else:
+            S = masks.size(0)
         if batch_size is None:
             batch_size = S
         else:
@@ -483,18 +493,31 @@ class PredictorBasedGenerator(nn.Module):
         ys = []
         for b in range(int(np.ceil(S / batch_size))):
             b0,b1 = b*batch_size, (b+1)*batch_size
-            ys.append(
-                self.predict_per_sample(
-                    x,
-                    masks=masks[...,b0:b1],
-                    split_samples=True,
-                    frame=frame,
-                    **kwargs
+            if sample_dim != 0:
+                ys.append(
+                    self.predict_per_sample(
+                        x,
+                        masks=masks[...,b0:b1],
+                        split_samples=True,
+                        frame=frame,
+                        **self.sample_tile_all_tensors(masks[...,b0:b1].size(-1), **kwargs)
+                    )
                 )
-            )
+            else: # just use the usual batch dimension
+                assert x.size(0) in (masks.size(0), masks.size(-1)), (x.shape, masks.shape)
+                _masks = masks[b0:b1] if len(masks.shape) == 2 else \
+                    rearrange(masks[...,b0:b1], 'b n s -> (b s) n')
+                ys.append(
+                    self.predict(
+                        x[b0:b1],
+                        mask=_masks,
+                        frame=frame,
+                        reset_masks=True,
+                        **self.sample_tile_all_tensors(x[b0:b1].size(0), **kwargs)
+                    )
+                )
             self.reset_padding_masks()
-        return torch.cat(ys, -1)
-            
+        return torch.cat(ys, -1 if sample_dim != 0 else 0)
 
     def predict_with_mask(self, mask, invert_mask=False, *args, **kwargs):
         assert self.x is not None

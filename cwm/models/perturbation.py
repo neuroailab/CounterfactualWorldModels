@@ -160,13 +160,61 @@ class ShiftPatchesAndMask(PatchPerturbation):
         self.max_shift_fraction = max_shift_fraction
         self.padding_mode = padding_mode
         self.allow_fractional_shifts = allow_fractional_shifts
+        self.set_num_shifts()
+
+    def set_num_shifts(self, num_shifts=None):
+        if num_shifts is None:
+            self._num_shifts = 1
+        else:
+            self._num_shifts = num_shifts
+
+    @property
+    def num_shifts(self):
+        if getattr(self, '_num_shifts', None) is None:
+            self.set_num_shifts()
+        return self._num_shifts
 
     def _check_shapes(self, x, mask):
         self.inp_mask_shape = mask.shape
 
-    def get_random_shift(self):
+    def _preprocess_shifts_sequence(self, shifts_sequence, is_mask_shift=False):
+        if shifts_sequence is None:
+            return [self.get_random_shift(is_mask_shift) for _ in range(self.num_shifts)]
 
-        rect = (lambda s,p: int((s // p) * p)) if not self.allow_fractional_shifts else (lambda s,p: s)
+        if hasattr(shifts_sequence, 'shape'):
+            ## tensor
+            assert len(shifts_sequence.shape) == 2, shifts_sequence.shape
+            D,S = shifts_sequence.shape
+            assert D == 2, D
+            assert S in (self.num_shifts, 1), (S, self.num_shifts)
+            if isinstance(shifts_sequence, torch.Tensor):
+                shifts_sequence = [shifts_sequence[...,s].detach().cpu().numpy() for s in range(S)]
+            else:
+                shifts_sequence = [shifts_sequence[...,s] for s in range(S)]
+
+        if isinstance(shifts_sequence, (list, tuple)):
+            if not isinstance(shifts_sequence[0], (list, tuple)):
+                shifts_sequence = [shifts_sequence]
+            assert all((len(s) == 2 for s in shifts_sequence))
+
+            ## all have same shift
+            if len(shifts_sequence) == 1:
+                return shifts_sequence * self.num_shifts
+
+            else:
+                assert len(shifts_sequence) == self.num_shifts, (len(shifts_sequence), self.num_shifts)
+
+        return shifts_sequence
+
+    def get_random_shift(self, is_mask_shift=False):
+
+        def rect(s, p):
+            q = 1 if is_mask_shift else p
+            if not self.allow_fractional_shifts:
+                return int(s // p) * q
+            else:
+                return int(np.round(s / p)) if is_mask_shift else s
+            
         max_shift = [int(self.max_shift_fraction * s) for s in self.image_size]
         random_shift = (0,0)
         while sum(random_shift) == 0:
