@@ -18,6 +18,12 @@ See demo jupyter notebooks for urls to download these weights and load them into
 
 Run the jupyter notebook `CounterfactualWorldModels/demo/FactualAndCounterfactual.ipynb`
 
+## Run a demo of segmenting Spelke objects by applying motion-counterfactuals
+
+Run the jupyter notebook `CounterfactualWorldModels/demo/SpelkeObjectSegmentation.ipynb`
+
+Users can upload their own images on which to run counterfactuals.
+
 #### factual predictions
 ![image](./demo/predictions/factual_predictions.png)
 
@@ -25,6 +31,7 @@ Run the jupyter notebook `CounterfactualWorldModels/demo/FactualAndCounterfactua
 ![image](./demo/predictions/counterfactual_predictions.png)
 
 ## Coming Soon!
-- [ ] Run counterfactual simulations (a.k.a. predictions) on user-supplied images
+- [x] Run counterfactual simulations (a.k.a. predictions) on user-supplied images
 - [ ] Head-motion (i.e. IMU)-conditioned prediction models
-- [ ] Clicking-based Spelke object segmentation interface
+- [x] Clicking-based Spelke object segmentation interface
+- [ ] Run motion counterfactuals with different patches moved in different directions
