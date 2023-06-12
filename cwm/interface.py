@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 import torchvision.transforms as transforms
 from torchvision.transforms import ToPILImage
+from einops import rearrange
 
 import cwm.models.prediction as prediction
 import cwm.models.perturbation as perturbation
@@ -522,20 +523,24 @@ class CounterfactualPredictionInterface(object):
                 self.show_last_segment(flow)
             self._store_current_patches()
         elif str(event.key).upper() == 'B': ## get a batch of flows
-            assert hasattr(self.G, 'sample_flows_from_single_mask'), \
-                "Your model wrapper must have a method 'sample_flows_from_single_mask'"
+            assert hasattr(self.G, 'predict_counterfactual_videos_and_flows'), \
+                "Your model wrapper must have a method 'predict_counterfactual_videos_and_flows'"
             with self.decorator:
-                fs, actives, _ = self.G.sample_flows_from_single_mask(
+                ys, fs = self.G.predict_counterfactual_videos_and_flows(
                     x=self._x.to(self.dtype),
-                    active_masks=self.active_patches,
-                    passive_masks=self.passive_patches,
+                    active_patches=self.active_patches,
+                    passive_patches=self.passive_patches,
+                    shifts=None,
                     num_samples=self.sample_batch_size,
-                    batch_size=self.max_samples_per_batch,                    
-                    num_splits=1,
+                    sample_batch_size=self.max_samples_per_batch,
                     mask_head_motion=False,
-                    static_head_motion=True,
-                    **self._model_kwargs)
-                fs_filter = getattr(self.G, 'flow_sample_filter')
+                    static_head_motion=getattr(self, 'static_head_motion', True),
+                    **self._model_kwargs
+                )
+                ys = rearrange(ys[:,-1], '(b s) c h w -> b c h w s', b=self._x.size(0))
+                self.imshow(ax=self.corr_ax, img=ys.mean(-1))
+                fs = rearrange(fs.squeeze(1), '(b s) c h w -> b c h w s', b=self._x.size(0))
+                fs_filter = getattr(self.G, 'flow_sample_filter', None)
                 if fs_filter is not None:
                     fs, fs_mask = fs_filter(fs, actives)
                     num_filtered = fs_mask.amax((1,2,3)).sum().item()
