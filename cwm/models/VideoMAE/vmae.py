@@ -15,6 +15,7 @@ from timm.data.constants import (IMAGENET_DEFAULT_MEAN,
                                  IMAGENET_DEFAULT_STD)
 
 import cwm.models.preprocessor as preproc
+from cwm.models.transformer import pos_embedding
 from .utils import (Block,
                     _cfg,
                     PatchEmbed,
@@ -444,7 +445,7 @@ class PretrainVisionTransformer(nn.Module):
             dim = self.embed_dim
         if self.timestamps is None:
             positions = self.num_patches
-            self.pos_embed = transformer.pos_embedding(
+            self.pos_embed = pos_embedding(
                 positions, dim, self.device)
         elif self._spacetime_separable_pos_embed:
             self.pos_embed = self._get_spacetime_separable_pos_embed(dim)

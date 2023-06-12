@@ -428,6 +428,8 @@ class PredictorBasedGenerator(nn.Module):
             if hasattr(self.predictor, 'main_stream'):
                 _x, _mask = self.predictor.get_current_inputs(
                     self._preprocess(x), mask, *args, **kwargs)[0][:2]
+                if self.imagenet_normalize_inputs:
+                    _x = utils.imagenet_unnormalize(_x)
                 if self.t_dim == 2:
                     _x = _x.transpose(1,2)
             else:
