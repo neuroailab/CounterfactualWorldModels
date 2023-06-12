@@ -660,7 +660,7 @@ class MultiShiftPatchesAndMask(ShiftPatchesAndMask):
 
     def reset_shifts(self):
         self.shifts = None
-        self.num_shifts = 1
+        self.set_num_shifts(None)
 
     def _check_shapes(self, x, mask_sequence):
         """figure out the shapes of the mask and the number of shifts"""

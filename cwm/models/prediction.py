@@ -401,6 +401,12 @@ class PredictorBasedGenerator(nn.Module):
         if mask is None:
             mask = self.generate_mask(x)
 
+        is_padded = hasattr(self.predictor, 'padding_mask') and \
+            torch.any(mask.sum(-1).amax() != mask.sum(-1).amin()).item()
+        if is_padded:
+            print("Warning: passed a batch of images with different numbers of visible tokens.")
+            
+
         self.set_image_size(x.shape[-2:])
         y = self.predictor(
             self._preprocess(x),
@@ -409,9 +415,13 @@ class PredictorBasedGenerator(nn.Module):
 
         if hasattr(self.predictor, 'padding_mask'):
             if hasattr(self.predictor, 'main_stream'):
-                y = y[:,:-self.predictor.main_stream.max_padding_tokens]
+                num_pad = self.predictor.main_stream.max_padding_tokens - \
+                    self.predictor.main_stream.min_padding_tokens
+                y = y[:,:-num_pad]
             else:
-                y = y[:,:-self.predictor.max_padding_tokens]
+                num_pad = self.predictor.max_padding_tokens - \
+                    self.predictor.min_padding_tokens                      
+                y = y[:,:-num_pad]
 
         ## if y isn't a video, need to do some postprocessing
         if len(y.shape) != 5:

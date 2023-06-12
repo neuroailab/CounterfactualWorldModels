@@ -14,6 +14,7 @@ from timm.models.layers import trunc_normal_ as __call_trunc_normal_
 from timm.data.constants import (IMAGENET_DEFAULT_MEAN,
                                  IMAGENET_DEFAULT_STD)
 
+import cwm.models.preprocessor as preproc
 from .utils import (Block,
                     _cfg,
                     PatchEmbed,
@@ -258,7 +259,7 @@ class PretrainVisionTransformer(nn.Module):
     default_input_kwargs = {'unnormalize': True}
     def __init__(self,
                  img_size=224, 
-                 patch_size=(16, 16),
+                 patch_size=(8, 8),
                  main_input=None,
                  main_input_kwargs=default_input_kwargs,
                  encoder_func=PretrainVisionTransformerEncoder,
@@ -278,7 +279,7 @@ class PretrainVisionTransformer(nn.Module):
                  mlp_ratio=4., 
                  qkv_bias=False, 
                  qk_scale=None,
-                 num_frames=16,
+                 num_frames=2,
                  drop_rate=0., 
                  attn_drop_rate=0.,
                  drop_path_rate=0., 
@@ -286,13 +287,10 @@ class PretrainVisionTransformer(nn.Module):
                  init_values=0.,
                  use_learnable_pos_emb=False,
                  spacetime_separable_pos_embed=False,
-                 tubelet_size=2,
+                 tubelet_size=1,
                  num_classes=0, # avoid the error from create_fn in timm
                  in_chans=0, # avoid the error from create_fn in timm
                  embed_per_frame=False,
-                 flow_model_ckpt=None,
-                 flow_frames=None,
-                 random_input=False,
                  use_flash_attention=False,
                  **kwargs
                  ):
@@ -473,8 +471,6 @@ class PretrainVisionTransformer(nn.Module):
             timestamps = torch.arange(T)[None].expand(B,-1).float().to(x.device)
         else:
             assert list(timestamps.shape) == [B,T], timestamps.shape
-
-
         
         ## preprocess
         x = self.get_main_input(x, timestamps=timestamps, *args, **kwargs)

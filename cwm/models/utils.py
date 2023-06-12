@@ -1,3 +1,4 @@
+import copy
 import numpy as np
 import torch
 from torch import nn
@@ -29,6 +30,48 @@ def imagenet_unnormalize(x, temporal_dim=2):
     x = x*std + mean
     return x
 
+def activation_func(act, **kwargs):
+    if act is None:
+        return nn.Identity()
+    elif isinstance(act, nn.Module):
+        return act
+    mdict = nn.ModuleDict([
+        ('relu', nn.ReLU(inplace=False)),
+        ('leaky_relu', nn.LeakyReLU(negative_slope=0.01, inplace=False)),
+        ('selu', nn.SELU(inplace=False)),
+        ('gelu', nn.GELU()),
+        ('silu', nn.SiLU()),
+        ('sigmoid', nn.Sigmoid()),
+        ('tanh', nn.Tanh()),
+        ('softmax', nn.Softmax(dim=1)),
+        ('softmax_max', SoftmaxMax(dim=-3)),
+        ('normalize', Normalize(**kwargs)),
+        ('sine', Sine(**kwargs)),
+        ('none', nn.Identity()),
+    ])
+    return mdict[act]
+
+def normalization_func(norm_fn, out_dim, num_groups=8, **kwargs):
+    if norm_fn is None:
+        return nn.Identity()
+    if hasattr(norm_fn, 'keys'):
+        norm_fn = copy.deepcopy(norm_fn)
+        func = norm_fn.pop('func', None)
+        kwargs.update(norm_fn)
+        norm_fn = func
+        
+    mdict = nn.ModuleDict([
+        ('batch', nn.BatchNorm2d(out_dim, **kwargs)),
+        ('group', nn.GroupNorm(out_dim, out_dim, **kwargs)),
+        ('instance', nn.InstanceNorm2d(out_dim, affine=True, **kwargs)),
+        ('layer', nn.LayerNorm(out_dim, **kwargs)),
+        ('none', nn.Sequential())
+    ])
+    return mdict[norm_fn]
+
+def num_parameters(module, order=0):
+    nparams = sum([np.prod(list(v.shape)) for v in list(module.parameters()) if v.requires_grad])
+    return (nparams // (10**order))
 
 def convex_upsample(x, mask, upsample_factor=8):
     U = upsample_factor
@@ -402,6 +445,24 @@ def video_to_frame_pairs(video, frame=None, dim=1):
         torch.stack([images[frame], images[t]], dim=dim)
         for t in target_ts]
     return pairs
+
+class SoftmaxMax(nn.Softmax):
+    def __init__(self, dim=1, eps=1e-12):
+        self.dim = dim
+        self.eps = eps
+        super().__init__(dim=dim)
+    def forward(self, x):
+        x = super().forward(x)
+        x = x / x.amax(self.dim, True).clamp(min=self.eps)
+        return x
+
+class Sine(nn.Module):
+    """From Sitzmann et al, 2022 -- SIRENs"""
+    def __init__(self, scale=30):
+        super().__init__()
+        self._scale = scale
+    def forward(self, x):
+        return torch.sin(self._scale * x)    
 
 class VideoToFramePairs(nn.Module):
     def __init__(self, frame=None, dim=1):
