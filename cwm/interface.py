@@ -54,6 +54,7 @@ class CounterfactualPredictionInterface(object):
                  static=True,
                  max_speed=None,
                  max_shift=3,
+                 preset_shifts=None,
                  sample_batch_size=8,
                  max_samples_per_batch=32,
                  normalize_flow_magnitude=False,
@@ -156,8 +157,22 @@ class CounterfactualPredictionInterface(object):
         self.seed = seed
         self.rng = np.random.RandomState(seed=seed)
 
+        # choose some preset shifts if passed
+        self.set_preset_shifts(preset_shifts)
+
     def set_sample_batch_size(self, v):
         self.sample_batch_size = sample_batch_size
+
+    def set_preset_shifts(self, shifts=None):
+        if shifts is None:
+            self.preset_shifts = None
+            return
+
+        assert isinstance(shifts, (list, tuple)), \
+            "Must pass a list or tuple of motion counterfactual directions you want to run per sample"
+        assert len(shifts[0]) == 2, "Each direction must be a 2-(tuple or list) in units of patch widths"
+        self.preset_shifts = shifts
+        self.sample_batch_size = len(self.preset_shifts)
 
     def connect(self):
         self.cidpush = self.ax.figure.canvas.mpl_connect('button_press_event', self.__call__)
@@ -530,7 +545,7 @@ class CounterfactualPredictionInterface(object):
                     x=self._x.to(self.dtype),
                     active_patches=self.active_patches,
                     passive_patches=self.passive_patches,
-                    shifts=None,
+                    shifts=self.preset_shifts,
                     num_samples=self.sample_batch_size,
                     sample_batch_size=self.max_samples_per_batch,
                     mask_head_motion=False,
@@ -542,8 +557,10 @@ class CounterfactualPredictionInterface(object):
                 fs = rearrange(fs.squeeze(1), '(b s) c h w -> b c h w s', b=self._x.size(0))
                 fs_filter = getattr(self.G, 'flow_sample_filter', None)
                 if fs_filter is not None:
-                    fs, fs_mask = fs_filter(fs, actives)
+                    _actives = self.active_patches.unsqueeze(-1).repeat(1, 1, fs.size(-1))
+                    fs, fs_mask = fs_filter(fs, _actives)
                     num_filtered = fs_mask.amax((1,2,3)).sum().item()
+                    self.num_filtered = num_filtered
                 else:
                     num_filtered = 0
                     

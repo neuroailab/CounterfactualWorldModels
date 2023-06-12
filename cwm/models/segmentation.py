@@ -7,6 +7,7 @@ from einops import rearrange
 import cwm.models.masking as masking
 import cwm.models.perturbation as perturbation
 from cwm.models.prediction import PredictorBasedGenerator
+from cwm.models.sampling import FlowSampleFilter
 from cwm.models.raft.raft_model import (load_raft_model,
                                         RAFT,
                                         default_raft_ckpt)
@@ -20,11 +21,19 @@ class FlowGenerator(PredictorBasedGenerator):
 
     Sampling counterfactual optical flow is the basis for Spelke Object segmentation in static images.
     """
+    default_flow_filter_params = {
+        'filter_methods': ['patch_magnitude', 'flow_area', 'num_corners'],
+        'flow_magnitude_threshold': 5.0,
+        'flow_area_threshold': 0.75,
+        'num_corners_threshold': 2
+    }
+    
     def __init__(self,
                  *args,
                  flow_model=None,
                  flow_model_load_path=None,
                  flow_model_kwargs={},
+                 flow_sample_filter=FlowSampleFilter(**default_flow_filter_params),
                  raft_iters=24,
                  **kwargs
                  ):
@@ -35,6 +44,9 @@ class FlowGenerator(PredictorBasedGenerator):
             **flow_model_kwargs)
         self.set_raft_iters(raft_iters)
         self.flow2rgb = FlowToRgb()
+
+        # filter for flow samples
+        self.flow_sample_filter = flow_sample_filter
 
     def set_flow_model(self,
                        flow_model=None,
@@ -56,6 +68,12 @@ class FlowGenerator(PredictorBasedGenerator):
             if isinstance(m, RAFT):
                 print("set RAFT to %s iters" % str(iters))
                 m.iters = iters
+
+    def set_flow_sample_filter(self, params=None):
+        if params is None:
+            self.flow_sample_filter = None
+        else:
+            self.flow_sample_filter = FlowSampleFilter(**params)
 
     def predict_flow(self,
                      vid,
@@ -318,14 +336,7 @@ class FlowGenerator(PredictorBasedGenerator):
             **kwargs
         )
         flow_mocos = self.predict_flow(y_mocos, backward=backward, iters=raft_iters)
-        return (y_mocos, flow_mocos)
-
-
-        
-        
-            
-        
-        
+        return (y_mocos, flow_mocos)        
 
 
         
