@@ -431,6 +431,50 @@ class FullMaskGenerator(MaskingGenerator):
             masks = torch.maximum(masks, fully_masked)
             return masks
 
+class ImuFullMaskGenerator(FullMaskGenerator):
+    def __init__(self,
+                 input_size=10,
+                 clumping_factor=1,
+                 *args,
+                 **kwargs):
+        if not isinstance(input_size, int):
+            input_size = int(np.prod(input_size))
+        assert isinstance(input_size, int), "input size must be a single int for Imu mask, %s" % input_size
+        super().__init__(input_size=(1,1,input_size),
+                         clumping_factor=(1, clumping_factor),
+                         *args,
+                         **kwargs)
+
+class MissingDataImuMaskGenerator(ImuFullMaskGenerator):
+    def __init__(self,
+                 truncation_mode='max',
+                 *args,
+                 **kwargs):
+        super().__init__(*args, **kwargs)
+        self.rect = RectangularizeMasks(truncation_mode)
+
+    def set_mode(self, mode):
+        self.rect.set_mode(mode)
+
+    @property
+    def mode(self):
+        return self.rect._mode
+
+    def forward(self, missing=None):
+        masks = super().forward(x=missing)
+        if missing is None:
+            return masks
+        
+        assert missing.dtype == torch.bool, missing.dtype                
+        assert list(missing.shape) == list(masks.shape), (missing.shape, masks.shape)
+
+        ## no missing data or ignore it        
+        if self.mode in ['none', None]:
+            return torch.maximum(masks, missing.to(masks.device))
+        
+        ## else make sure all masks have equal number of masked tokens, includding missing ones
+        return self.rect(torch.maximum(masks, missing.to(masks.device)))        
+
 class RotatedTableUniformMaskingGenerator(MaskingGenerator):
 
     def __init__(self,

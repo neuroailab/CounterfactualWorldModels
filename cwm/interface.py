@@ -52,6 +52,7 @@ class CounterfactualPredictionInterface(object):
                  frame=0,
                  device='cpu',
                  static=True,
+                 static_head_motion=True,
                  max_speed=None,
                  max_shift=3,
                  preset_shifts=None,
@@ -151,14 +152,15 @@ class CounterfactualPredictionInterface(object):
         ## for showing segments
         self.counterfactual_inputs = []
         self.preds_list, self.flow_samples_list, self._corrmat_inds_list, self.shifts = [], [], [], []
-        self._show_error_diff = show_error_diff
-        self._reset_flow_errors_list()
         self._flow_corrs = self._num_flow_samples = None
         self.seed = seed
         self.rng = np.random.RandomState(seed=seed)
 
         # choose some preset shifts if passed
         self.set_preset_shifts(preset_shifts)
+
+        # make the head motion static
+        self.static_head_motion = static_head_motion
 
     def set_sample_batch_size(self, v):
         self.sample_batch_size = sample_batch_size
@@ -257,21 +259,25 @@ class CounterfactualPredictionInterface(object):
             x = self.G.make_static_movie(x[:,0:1], T=2)
 
         kwargs.update(self._model_kwargs)
-        if hasattr(self.G, 'get_counterfactual_flow'):
-            assert hasattr(self.G, 'get_static_imu')
-            y, flow = self.G.get_counterfactual_flow(x,
-                                                     head_motion=self.G.get_static_imu(
-                                                         x=self.G.x.to(self.dtype)),
-                                                     mask_head_motion=False,
-                                                     *args, **kwargs)
-            return (y, flow)
-        else:
-            y = self.G.get_counterfactual_prediction(x,
-                                                     active_patches=self.active_patches,
-                                                     mask=self.passive_patches,
-                                                     shift=shift)
-                                                     
-            return (y, None)
+        x_context, mask_context = None, None
+        if hasattr(self.G, 'head_motion_generator'):
+            if self.static_head_motion:
+                h = self.G.get_static_imu()
+            else:
+                h = self.G.predict_imu_from_video(self.G.x)                
+            mask_context = torch.zeros(h.size(0), self.G.num_head_tokens).bool().to(h.device)
+            if not self.static_head_motion: # mask head motion because we don't know what it really is
+                mask_context = ~mask_context
+            x_context = self.G.head_motion_generator.reshape_output(h)
+
+        y = self.G.get_counterfactual_prediction(x,
+                                                 active_patches=self.active_patches,
+                                                 mask=self.passive_patches,
+                                                 shift=shift,
+                                                 x_context=x_context,
+                                                 mask_context=mask_context)
+
+        return (y, None)
         
     def _get_patch_inds(self, event):
         if event.xdata is None or event.ydata is None:

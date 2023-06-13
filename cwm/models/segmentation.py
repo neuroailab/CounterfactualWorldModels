@@ -14,6 +14,8 @@ from cwm.models.raft.raft_model import (load_raft_model,
 
 from cwm.vis_utils import imshow
 from cwm.data.utils import FlowToRgb
+from cwm.models.utils import (imagenet_normalize,
+                              imagenet_unnormalize)
 
 class FlowGenerator(PredictorBasedGenerator):
     """
@@ -298,7 +300,8 @@ class FlowGenerator(PredictorBasedGenerator):
         S = max(active_patches.size(-1), passive_patches.size(-1))
         if (S == 1) and num_samples > 1:
             S = num_samples
-            
+
+        self.shifter.set_shapes(x, mask=active_patches[...,0])
         if shifts is None:
             self.shifter.set_num_shifts(S)
             if max_shift_fraction is not None:
@@ -336,9 +339,431 @@ class FlowGenerator(PredictorBasedGenerator):
             **kwargs
         )
         flow_mocos = self.predict_flow(y_mocos, backward=backward, iters=raft_iters)
-        return (y_mocos, flow_mocos)        
+        return (y_mocos, flow_mocos)
 
+class ImuGenerator(FlowGenerator):
+    """
+    Wrap predictors that input and output IMU data in addition to RGB video
+    """
+    def __init__(self,
+                 *args,
+                 head_mask_generator=None,
+                 head_mask_ratio=0,
+                 always_use_predicted=False,
+                 require_none_missing=False,
+                 **kwargs):
+        super().__init__(*args, **kwargs)
 
+        # IMU masked predictors in this work are always conjoined vmaes with a main RGB stream
+        assert hasattr(self.predictor, 'context_stream')
+        self._is_padded = hasattr(self.predictor.context_stream, 'padding_mask')
+        self.num_head_tokens = self.predictor.context_stream.encoder.num_tokens
+
+        # default mask generator for the visual input/output
+        if self.mask_generator is None:
+            self.mask_generator = masking.MaskingGenerator(
+                input_size=self.predictor.mask_size,
+                mask_ratio=0,
+                always_batch=True,
+                create_on_cpu=False)
+
+        ## default mask generator for the head motion input/output
+        if head_mask_generator is not None:
+            self.head_mask_generator = head_mask_generator
+        else:
+            self.set_head_mask_generator()
+            self.set_head_mask_params(mask_ratio=head_mask_ratio)
+
+        self._always_use_predicted = always_use_predicted
+        self._require_none_missing = require_none_missing
+        self.missing_imu = None
+
+    def set_head_mask_generator(self):
+        self.head_mask_generator = masking.MissingDataImuMaskGenerator(
+            input_size=(self.num_head_tokens),
+            mask_ratio=0,
+            full_mask_prob=0,
+            full_vis_prob=0,
+            truncation_mode='none',
+            create_on_cpu=True)
+
+    def set_head_mask_params(self, **kwargs):
+        for k,v in kwargs.items():
+            setattr(self.head_mask_generator, k, v)
+
+    def set_mode(self, mode='output'):
+        if mode == 'output':
+            self.set_head_mask_params(mask_ratio=1.0)
+        elif mode == 'input':
+            self.set_head_mask_params(mask_ratio=0.0)
+        else:
+            raise ValueError("%s is not a known mode" % mode)
+
+    def input_mode(self):
+        self.set_mode('input')
+    def output_mode(self):
+        self.set_mode('output')
+
+    def get_imu_input(self,
+                      inp_dict,
+                      imu_mode='input',
+                      missing_thresh=0.5,
+                      device=None):
+
+        if imu_mode is not None:
+            self.set_mode(imu_mode)
+
+        add_batch_dim = (len(inp_dict['imu'].shape) != 3)
+        _unsq = lambda x: (x.unsqueeze(0) if add_batch_dim else x)
+
+        if self.t_dim == 2:
+            x = imagenet_unnormalize(_unsq(inp_dict['video']).transpose(1,2)).transpose(1,2)
+        else:
+            x = imagenet_unnormalize(_unsq(x))
+        imu = _unsq(inp_dict['imu'])
+        if self.t_dim == 2:
+            imu = imu.transpose(1,2)
+        missing_imu = _unsq(inp_dict['imu_missing_data'])
+        missing_imu = missing_imu.view(missing_imu.size(0), self.num_head_tokens, -1)
+        imu_mask = self.head_mask_generator(missing_imu.float().mean(-1) > missing_thresh)
+        ts = _unsq(inp_dict['video_ts'])
+
+        out_list = [x, imu, missing_imu, imu_mask, ts]
+        if device is not None:
+            out_list = [v.to(device) for v in out_list]
+        return out_list
+
+    def reshape_input(self, x, tubelet_size=None):
+        if tubelet_size is None:
+            tubelet_size = self.predictor.context_stream.patch_size[0]
+        return rearrange(x, 'b c (t pt) -> b t (pt c)', pt=tubelet_size)
+
+    def reshape_output(self, y, tubelet_size=None):
+        if tubelet_size is None:
+            tubelet_size = self.predictor.context_stream.patch_size[0]
+        c = y.size(-1) // tubelet_size
+        return rearrange(y, 'b t (pt c) -> b c (t pt)', c=c, pt=tubelet_size)
+
+    def predict_imu(self, inp_dict, imu_mask_ratio=1, device=None, get_labels=True):
+
+        self.set_head_mask_params(mask_ratio=imu_mask_ratio)
+
+        x, imu, missing_imu, imu_mask, timestamps = self.get_imu_input(
+            inp_dict, device=device, imu_mode=None)
+        self.missing_imu = missing_imu
+        self.mask = self.mask_generator(x).to(x.device)
+
+        if imu_mask_ratio == 1:
+            imu_mask = torch.ones_like(imu_mask)
+        elif not self._is_padded:
+            imu_mask = self.mask_rectangularizer(imu_mask)
+
+        main_out, imu_out = self.predictor(
+            x=x.transpose(1,2),
+            mask=self.mask,
+            timestamps=timestamps,
+            x_context=imu,
+            mask_context=imu_mask,
+            output_main=True,
+            output_context=True)
+
+        imu_labels_orig = self.reshape_input(imu)
+        
+        ## no indexing necessary
+        if imu_mask_ratio == 1 and (not self._is_padded):
+            imu_labels = imu_labels_orig
+            imu_pred = imu_out
+
+        ## padded models require some indexing to get the non-padding tokens
+        elif self._is_padded:
+            imu_labels = self.predictor.get_masked_imu(imu, torch.ones_like(imu_mask))
+            imu_pred = torch.zeros_like(imu_labels)
+            null_mask = self.predictor.context_stream.null_mask
+
+            imu_true = self.predictor.get_masked_imu(imu, ~imu_mask)
+            imu_pred[null_mask] = imu_true[null_mask]
+            imu_pred[~null_mask] = imu_out[~null_mask]
+
+            _imu_pred = imu_pred[~null_mask]
+            _imu_labels = imu_labels[~null_mask]
+
+            imu_pred = torch.zeros(imu_out.size(0), self.num_head_tokens, _imu_pred.size(-1)).to(_imu_pred)
+            imu_pred[imu_mask] = _imu_pred
+            imu_pred[~imu_mask] = imu_labels_orig[~imu_mask]
+
+            imu_labels = torch.zeros_like(imu_pred)
+            imu_labels[imu_mask] = _imu_labels
+            imu_labels[~imu_mask] = imu_labels_orig[~imu_mask]
+
+            self.predictor.context_stream._reset_padding_mask()
+            
+        else: ## no padding involved
+            imu_labels = imu_labels_orig
+            imu_pred = torch.zeros_like(imu_labels)
+            imu_true = self.predictor.get_masked_imu(imu, ~imu_mask)
+            imu_pred[~imu_mask] = imu_true.view(-1, imu_pred.size(-1))
+            imu_pred[imu_mask] = imu_out.view(-1, imu_pred.size(-1))
+
+        if getattr(self.predictor, '_main_padded', False):
+            self.predictor.main_stream._reset_padding_mask()
+
+        if get_labels:
+            return (imu_pred, imu_labels)
+        return imu_pred
+
+    @property
+    def any_imu(self):
+        if self.missing_imu is None:
+            return None
+        return ~(torch.amin(self.missing_imu, (-2,-1)).bool())
+
+    @property
+    def full_imu(self):
+        if self.missing_imu is None:
+            return None
+        return ~(torch.amax(self.missing_imu, (-2,-1)).bool())
+
+    def forward(self, inp_dict, imu_mask_ratio=1, device=None):
+        """Get the predicted imu when it's not in the dataset and the true imu when it is (optionally)"""
+        imu_pred, imu_labels = self.predict_imu(inp_dict,
+                                                imu_mask_ratio=imu_mask_ratio,
+                                                device=device,
+                                                get_labels=True)
+
+        ## get the predicted imu when it's not in the data
+        if self._always_use_predicted:
+            imu_out = imu_pred
+        elif self._require_none_missing:
+            imu_out = torch.where(self.full_imu[:,None,None], imu_labels, imu_pred)
+        else:
+            imu_out = torch.where(self.any_imu[:,None,None], imu_labels, imu_pred)
+
+        ## update the missing data indicator
+        if self._always_use_predicted:
+            missing_imu = torch.zeros_like(self.missing_imu)
+        else:
+            missing_imu = torch.where(self.any_imu[:,None,None],
+                                      self.missing_imu,
+                                      torch.zeros_like(self.missing_imu))
+
+        return (imu_out, missing_imu)
+
+class ImuConditionedFlowGenerator(FlowGenerator):
+    """
+    A combined wrapper for two models:
+        1. A model that predicts ~2 seconds of IMU data from a pair of frames
+        2. A masked predictor conditioned on both patches of video and on ~2 seconds of IMU
+
+    Note that model (1) is just a special case of a masked predictor that _predicts_ IMU,
+    which is always masked as an input to the model.
+    """
+    default_imu_generator_kwargs = {
+        'head_mask_ratio': 1
+    }
+    
+    def __init__(self,
+                 *args,
+                 predictor,
+                 head_motion_predictor,
+                 head_motion_load_path=None,
+                 head_motion_generator=ImuGenerator,
+                 head_motion_kwargs=default_imu_generator_kwargs,
+                 head_motion_mask_generator=None,
+                 flow_model=None,
+                 flow_model_load_path=None,
+                 **kwargs):
+
+        # init the main predictor model, which has imu conditioning
+        super().__init__(*args,
+                         predictor=predictor,
+                         flow_model=flow_model,
+                         flow_model_load_path=flow_model_load_path,
+                         **kwargs)
+
+        # init the imu predictor
+        head_motion_kwargs = copy.deepcopy(head_motion_kwargs)
+        self._update_head_motion_kwargs(head_motion_load_path, head_motion_kwargs)
+
+        if not isinstance(head_motion_predictor, nn.Module):
+            head_motion_predictor = head_motion_predictor()
+        self.head_motion_generator = head_motion_generator(
+            predictor=head_motion_predictor,
+            mask_generator=head_motion_mask_generator,
+            flow_model=self.flow_model,
+            **head_motion_kwargs)
+
+    def _update_head_motion_kwargs(self, load_path, kwargs):
+        kwargs['imagenet_normalize_inputs'] = kwargs.get('imagenet_normalize_inputs',
+                                                         self.imagenet_normalize_inputs)
+        kwargs['temporal_dim'] = kwargs.get('temporal_dim', self.predictor.t_dim)
+        kwargs['predictor_load_path'] = load_path
+
+    @property
+    def num_head_tokens(self):
+        return self.head_motion_generator.num_head_tokens
+
+    @property
+    def head_tubelet_size(self):
+        return self.head_motion_generator.predictor.context_stream.patch_size[0]
+
+    @property
+    def head_motion_channels(self):
+        return getattr(self.head_motion_generator.predictor.get_context_input, 'num_channels', 6)
+
+    def get_fake_head_motion(self, x):
+        """Get a fake head motion input and mask, typical use case for input to head_motion_generator"""
+        B = x.size(0)
+        device = x.device
+        head_motion = torch.zeros(
+            (B, self.head_tubelet_size * self.num_head_tokens, self.head_motion_channels),
+            device=device).to(x.dtype)
+        head_mask = torch.ones(
+            (B, self.num_head_tokens),
+            device=device).bool()
+
+        if self.head_motion_generator.t_dim == 2:
+            head_motion = head_motion.transpose(self.head_motion_generator.t_dim,
+                                                self.head_motion_generator.c_dim)
+        return (head_motion, head_mask)
+
+    def predict_imu_from_video(self, x, timestamps=None):
+        fake_imu, imu_mask = self.get_fake_head_motion(x)
+        mask = self.head_motion_generator.mask_generator(x).to(x.device)
+        x = self.head_motion_generator._preprocess(x)
+        
+        imu_out = self.head_motion_generator.predictor(
+            x,
+            mask=mask,
+            timestamps=timestamps,
+            x_context=fake_imu,
+            mask_context=imu_mask,
+            output_main=False,
+            output_context=True)
+
+        if not self.head_motion_generator._is_padded:
+            return imu_out
+
+        imu_labels_orig = self.head_motion_generator.reshape_imu(fake_imu)
+        imu_labels = self.head_motion_generator.predictor.get_masked_imu(
+            fake_imu, imu_mask)
+        imu_pred = torch.zeros_like(imu_labels)
+        null_mask = self.head_motion_generator.predictor.context_stream.null_mask
+        imu_true = self.head_motion_generator.predictor.get_masked_imu(fake_imu, ~imu_mask)
+        imu_pred[null_mask] = imu_true[null_mask]
+        imu_pred[~null_mask] = imu_out[~null_mask]
+        _imu_pred = imu_pred[~null_mask]
+        imu_pred = torch.zeros_like(imu_out.size(0),
+                                    self.num_head_tokens,
+                                    _imu_pred.size(-1)).to(_imu_pred)
+        imu_pred[imu_mask] = _imu_pred
+        imu_pred[~imu_mask] = imu_labels_orig[~imu_mask]
+
+        self.head_motion_generator.predictor.context_stream._reset_padding_mask()        
+
+        if getattr(self.head_motion_generator.predictor, '_main_padded', False):
+            self.head_motion_generator.main_stream._reset_padding_mask()
+
+        return imu_pred
+
+    def get_static_imu(self, x=None, timestamps=None):
+        if x is None:
+            x = self.x
+        _x = torch.tile(x[:,0:1], (1,x.size(1),1,1,1))
+        return self.predict_imu_from_video(_x, timestamps=timestamps)
+
+    def get_zeros_imu(self, x=None, timestamps=None):
+        if x is None:
+            x = self.x
+        return torch.zeros_like(
+            self.predict_imu_from_video(x, timestamps=timestamps))
+
+    def predict_imu_video_and_flow(self,
+                                   x,
+                                   mask=None,
+                                   timestamps=None,
+                                   head_motion=None,                
+                                   mask_head_motion=False,
+                                   static_head_motion=False,
+                                   return_flow=True,
+                                   return_head_motion=False,
+                                   *args, **kwargs):
+
+        self.set_input(x)
+        if mask is None:
+            self.mask = self.generate_mask(x)
+        else:
+            self.mask = mask
+
+        ## get head motion
+        if head_motion is not None:
+            h = head_motion
+        elif static_head_motion:
+            h = self.get_static_imu()
+        else:
+            h = self.predict_imu_from_video(x, timestamps=timestamps)
+
+        if return_head_motion:
+            return h
+
+        # get head motion mask
+        h_mask = torch.zeros(h.size(0), self.num_head_tokens).bool().to(h.device)
+        if mask_head_motion:
+            h_mask = ~h_mask
+
+        # get the video and flow prediction
+        y, flow = self.predict_video_and_flow(
+            x,
+            mask=self.mask,
+            timestamps=timestamps,
+            x_context=self.head_motion_generator.reshape_output(h),
+            mask_context=h_mask,
+            *args, **kwargs)
+
+        self.reset_padding_masks()
+
+        return (y, flow)
+
+    def predict_counterfactual_videos_and_flows(self,
+                                                x,
+                                                *args,
+                                                head_motion=None,
+                                                timestamps=None,
+                                                mask_head_motion=False,
+                                                static_head_motion=True,
+                                                **kwargs):
+        self.set_input(x)
+        h = self.predict_imu_video_and_flow(
+            x,
+            *args,
+            head_motion=head_motion,
+            static_head_motion=static_head_motion,
+            return_head_motion=True,
+            **kwargs
+        )
+        self.mask = None
+        self.reset_padding_masks()
+        h_mask = torch.zeros(h.size(0), self.num_head_tokens).bool().to(h.device)
+        if mask_head_motion:
+            h_mask = ~h_mask
+
+        h = self.head_motion_generator.reshape_output(h)
+
+        return super().predict_counterfactual_videos_and_flows(
+            x,
+            *args,
+            timestamps=timestamps,
+            x_context=h,
+            mask_context=h_mask,
+            **kwargs
+        )
+            
+
+    def forward(self, *args, **kwargs):
+        return self.predict_imu_video_and_flow(*args, **kwargs)
+    
+    
+        
+        
         
 
         
