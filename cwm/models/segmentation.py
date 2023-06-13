@@ -14,8 +14,10 @@ from cwm.models.raft.raft_model import (load_raft_model,
 
 from cwm.vis_utils import imshow
 from cwm.data.utils import FlowToRgb
-from cwm.models.utils import (imagenet_normalize,
-                              imagenet_unnormalize)
+import cwm.models.utils as utils
+
+imagenet_normalize = utils.imagenet_normalize
+imagenet_unnormalize = utils.imagenet_unnormalize
 
 class FlowGenerator(PredictorBasedGenerator):
     """
@@ -340,6 +342,77 @@ class FlowGenerator(PredictorBasedGenerator):
         )
         flow_mocos = self.predict_flow(y_mocos, backward=backward, iters=raft_iters)
         return (y_mocos, flow_mocos)
+
+    @staticmethod
+    def compute_flow_corrs(flow_samples,
+                           flow_samples_swap=None,
+                           downsample=1,
+                           take_top_k=None,
+                           do_spearman=False,
+                           distance_func=utils.ChannelMSE(dim=1),
+                           thresh=None,
+                           use_covariance=False,
+                           eps=1e-12,
+                           binarize=False,
+                           normalize=False,
+                           zscore=False,
+                           range_thresh=None
+    ):
+        B,C,H,W,S = flow_samples.shape
+        if S == 0:
+            flow_samples = torch.zeros(list(flow_samples.shape)[:-1] + [1]).to(
+                flow_samples.device).float()
+            S = 1
+        
+        if flow_samples_swap is not None:
+            assert list(flow_samples_swap.shape) == [B,C,H,W,S]
+        if take_top_k is None:
+            K = S
+        else:
+            K = take_top_k
+
+        ds = downsample            
+        def _ds(fs):
+            return torch.nn.functional.avg_pool3d(fs[...,:K].permute(0,1,4,2,3),
+                                                  (1,ds,ds),
+                                                  stride=(1,ds,ds)).permute(0,1,3,4,2)
+        
+        flow_inp = _ds(flow_samples)
+        if flow_samples_swap is not None:
+            flow_inp = torch.cat([flow_inp, _ds(flow_samples_swap)], -1)
+
+        flow_inp = distance_func(flow_inp, torch.zeros_like(flow_inp)).reshape(B,-1,flow_inp.size(-1))
+
+        flow_corrs = []
+        for b in range(B):
+            if do_spearman:
+                flow_inp_b = torch.argsort(flow_inp[b], -1).float()
+            else:
+                flow_inp_b = flow_inp[b]
+                
+            if (thresh is not None) and (binarize is False):
+                flow_inp_b = flow_inp_b * (flow_inp_b > thresh).float()
+            elif thresh is not None:
+                flow_inp_b = (flow_inp_b > thresh).float()
+            elif range_thresh is not None:
+                flow_inp_b = flow_inp_b - flow_inp_b.amin(0, True)
+                flow_range = flow_inp_b.amax(0, True)
+                flow_inp_b = (flow_inp_b > (range_thresh * flow_range)).float()
+
+            if normalize:
+                flow_inp_b = flow_inp_b / flow_inp_b.amax(0, True).clamp(min=eps)
+            if zscore:
+                mn, std = flow_inp_b.mean(0), flow_inp_b.std(0).clamp(min=eps)
+                flow_inp_b = (flow_inp_b - mn[None]) / std[None]
+            
+            flow_corrs_b = torch.cov(flow_inp_b) if use_covariance else torch.corrcoef(flow_inp_b)
+            flow_corrs_b[torch.isnan(flow_corrs_b)] = 0
+
+            flow_corrs.append(flow_corrs_b)
+
+        flow_corrs = torch.stack(flow_corrs, 0)
+        flow_corrs = flow_corrs.view(B,1,H//ds,W//ds,H//ds,W//ds)
+        return flow_corrs    
 
 class ImuGenerator(FlowGenerator):
     """
