@@ -300,7 +300,8 @@ class FlowGenerator(PredictorBasedGenerator):
         S = max(active_patches.size(-1), passive_patches.size(-1))
         if (S == 1) and num_samples > 1:
             S = num_samples
-            
+
+        self.shifter.set_shapes(x, mask=active_patches[...,0])
         if shifts is None:
             self.shifter.set_num_shifts(S)
             if max_shift_fraction is not None:
@@ -721,6 +722,41 @@ class ImuConditionedFlowGenerator(FlowGenerator):
         self.reset_padding_masks()
 
         return (y, flow)
+
+    def predict_counterfactual_videos_and_flows(self,
+                                                x,
+                                                *args,
+                                                head_motion=None,
+                                                timestamps=None,
+                                                mask_head_motion=False,
+                                                static_head_motion=True,
+                                                **kwargs):
+        self.set_input(x)
+        h = self.predict_imu_video_and_flow(
+            x,
+            *args,
+            head_motion=head_motion,
+            static_head_motion=static_head_motion,
+            return_head_motion=True,
+            **kwargs
+        )
+        self.mask = None
+        self.reset_padding_masks()
+        h_mask = torch.zeros(h.size(0), self.num_head_tokens).bool().to(h.device)
+        if mask_head_motion:
+            h_mask = ~h_mask
+
+        h = self.head_motion_generator.reshape_output(h)
+
+        return super().predict_counterfactual_videos_and_flows(
+            x,
+            *args,
+            timestamps=timestamps,
+            x_context=h,
+            mask_context=h_mask,
+            **kwargs
+        )
+            
 
     def forward(self, *args, **kwargs):
         return self.predict_imu_video_and_flow(*args, **kwargs)
