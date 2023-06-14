@@ -22,7 +22,9 @@ class PredictorBasedGenerator(nn.Module):
     """
     def __init__(self,
                  predictor=None,
-                 predictor_load_path=None,                 
+                 predictor_load_path=None,
+                 keypoint_predictor=None,
+                 keypoint_predictor_load_path=None,                 
                  error_func=nn.MSELoss(reduction='none'),
                  imagenet_normalize_inputs=False,
                  temporal_dim=2,
@@ -60,7 +62,13 @@ class PredictorBasedGenerator(nn.Module):
             padding_mode='constant',
             allow_fractional_shifts=True
         )
-        
+
+        if keypoint_predictor is not None:
+            self.keypoint_predictor = keypoint_predictor
+            self.load_predictor(keypoint_predictor_load_path,
+                                model=self.keypoint_predictor)
+        else:
+            self.keypoint_predictor = None
 
         self.x, self.mask, self.timestamps = None, None, None
 
@@ -804,6 +812,20 @@ class PredictorBasedGenerator(nn.Module):
 
         y_p = self.predict(x_p, mask_p, frame=None, **kwargs)
         return y_p
+
+    def predict_keypoints_map(self, x, *args, **kwargs):
+        assert len(x.shape) == 5, x.shape
+        if self.keypoint_predictor is None:
+            return torch.ones_like(x[:,0:1,0:1])
+        value = self.keypoint_predictor(x, *args, **kwargs)
+        return value
+
+    def predict_keypoints_distribution(self, x, power=8, eps=1e-3):
+        value = self.predict_keypoints_map(x).squeeze(-3)
+        value = (value.sigmoid()) ** power
+        value = value - value.amin((-2, -1))
+        value = value / value.amax((-2, -1)).clamp(min=eps)
+        return value
 
     def forward(self, x, mask=None, frame=None, *args, **kwargs):
 

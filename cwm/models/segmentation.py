@@ -7,7 +7,8 @@ from einops import rearrange
 import cwm.models.masking as masking
 import cwm.models.perturbation as perturbation
 from cwm.models.prediction import PredictorBasedGenerator
-from cwm.models.sampling import FlowSampleFilter
+from cwm.models.sampling import (FlowSampleFilter,
+                                 RotatedTableEnergyMaskingGenerator)
 from cwm.models.raft.raft_model import (load_raft_model,
                                         RAFT,
                                         default_raft_ckpt)
@@ -31,6 +32,13 @@ class FlowGenerator(PredictorBasedGenerator):
         'flow_area_threshold': 0.75,
         'num_corners_threshold': 2
     }
+
+    default_patch_sampling_kwargs = {
+        'energy_power': 1,
+        'eps': 1e-16,
+        'pool_mode': 'mean',
+        'resize': False
+    }
     
     def __init__(self,
                  *args,
@@ -39,6 +47,8 @@ class FlowGenerator(PredictorBasedGenerator):
                  flow_model_kwargs={},
                  flow_sample_filter=FlowSampleFilter(**default_flow_filter_params),
                  raft_iters=24,
+                 patch_sampling_func=RotatedTableEnergyMaskingGenerator,
+                 patch_sampling_kwargs=default_patch_sampling_kwargs,
                  **kwargs
                  ):
         super().__init__(*args, **kwargs)
@@ -51,6 +61,12 @@ class FlowGenerator(PredictorBasedGenerator):
 
         # filter for flow samples
         self.flow_sample_filter = flow_sample_filter
+
+        # submodule for sampling patches
+        self._patch_sampling_func = patch_sampling_func
+        self._patch_sampling_kwargs = copy.deepcopy(self.default_patch_sampling_kwargs)
+        self._patch_sampling_kwargs.update(patch_sampling_kwargs)
+        self.set_patch_sampler()
 
     def set_flow_model(self,
                        flow_model=None,
@@ -78,6 +94,38 @@ class FlowGenerator(PredictorBasedGenerator):
             self.flow_sample_filter = None
         else:
             self.flow_sample_filter = FlowSampleFilter(**params)
+
+    def set_patch_sampler(self, num_visible=1, mask_ratio=None, **kwargs):
+        if (getattr(self, 'patch_sampler', None) is None) or len(kwargs.keys()):
+            _kwargs = copy.deepcopy(self._patch_sampling_kwargs)
+            _kwargs.update(kwargs)
+            try:
+                mask_shape = self.mask_shape
+            except:
+                mask_shape = self.predictor.mask_size
+            self.patch_sampler = self._patch_sampling_func(
+                input_size=mask_shape,
+                mask_ratio=(mask_ratio or 0),
+                seed=self.rng.randint(9999),
+                always_batch=True,
+                **_kwargs)
+
+        if mask_ratio is not None:
+            self.patch_sampler.mask_ratio = mask_ratio
+        elif num_visible is not None:
+            self.patch_sampler.num_visible = num_visible * self.patch_sampler.clumping_factor**2
+
+    def sample_patches_from_energy(self, energy=None, num_samples=10, num_visible=1, beta=None, **kwargs):
+        self.set_patch_sampler(num_visible, **kwargs)
+        if num_visible == 0:
+            return torch.stack([self.get_zeros_mask() for _ in range(num_samples)], -1)
+        if energy is None:
+            assert self.x is not None
+            energy = torch.ones_like(self.x[:,0,0:1])
+        energy = utils.boltzmann(energy, beta)
+        torch.manual_seed(self.rng.randint(99999))
+        masks = torch.stack([self.patch_sampler(energy) for _ in range(num_samples)], -1)
+        return masks
 
     def predict_flow(self,
                      vid,
@@ -187,6 +235,13 @@ class FlowGenerator(PredictorBasedGenerator):
     def reset_shifts(self):
         self.shifts = []
 
+    def compute_flow_samples_magnitude(self, flows, normalize=True, dim=-4, eps=1e-2):
+        flow_mags = flows.square().sum(dim, True).sqrt().to(flows.dtype)
+        if normalize:
+            flow_mags = flow_mags - flow_mags.amin((-3, -2), True)
+            flow_mags = flow_mags / flow_mags.amax((-3, -2), True).clamp(min=eps)
+        return flow_mags
+    
     def create_motion_counterfactuals(self,
                                       x,
                                       masks,
@@ -342,6 +397,47 @@ class FlowGenerator(PredictorBasedGenerator):
         )
         flow_mocos = self.predict_flow(y_mocos, backward=backward, iters=raft_iters)
         return (y_mocos, flow_mocos)
+
+    def sample_counterfactual_motion_map(self,
+                                         x,
+                                         active_sampling_distribution=None,
+                                         passive_sampling_distribution=None,
+                                         active_patches=None,
+                                         passive_patches=None,
+                                         num_active_patches=1,
+                                         num_passive_patches=0,
+                                         num_samples=8,
+                                         sample_batch_size=8,
+                                         patch_sampling_kwargs={},
+                                         do_filter=True,
+                                         **kwargs):
+
+        def _sample_patches(dist, num_visible):
+            return self.sample_patches_from_energy(energy=dist,
+                                                   num_samples=num_samples,
+                                                   num_visible=num_visible,
+                                                   **patch_sampling_kwargs)
+
+        if active_patches is None:
+            active_patches = _sample_patches(active_sampling_distribution, num_active_patches)
+        if passive_patches is None:
+            passive_patches = _sample_patches(passive_sampling_distribution, num_passive_patches)
+
+        ys, flows = self.predict_counterfactual_videos_and_flows(
+            x,
+            active_patches=active_patches,
+            passive_patches=passive_patches,
+            num_samples=num_samples,
+            sample_batch_size=sample_batch_size,
+            fix_passive=True,
+            **kwargs
+        )
+        flows = rearrange(flows.squeeze(1), '(b s) c h w -> b c h w s', b=x.size(0))
+
+        if (self.flow_sample_filter is not None) and do_filter:
+            flows, filter_mask = self.flow_sample_filter(flows, active_patches)
+
+        return (flows, active_patches, passive_patches)
 
     @staticmethod
     def compute_flow_corrs(flow_samples,
