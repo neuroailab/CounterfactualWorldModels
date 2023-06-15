@@ -127,6 +127,18 @@ class FlowGenerator(PredictorBasedGenerator):
         masks = torch.stack([self.patch_sampler(energy) for _ in range(num_samples)], -1)
         return masks
 
+    @staticmethod
+    def batch_to_samples(flows, t=0, B=1):
+        assert len(flows.shape) == 5, flows.shape
+        return rearrange(flows[:,t], '(b s) c h w -> b c h w s', b=B)
+
+    def _batch_to_samples(self, flows, t=0):
+        assert self.x is not None
+        if len(flows.shape) != 5:
+            flows = flows.unsqueeze(1)
+            t = 0
+        return self.batch_to_samples(flows, t=t, B=self.x.size(0))
+
     def predict_flow(self,
                      vid,
                      backward=False,
@@ -241,6 +253,27 @@ class FlowGenerator(PredictorBasedGenerator):
             flow_mags = flow_mags - flow_mags.amin((-3, -2), True)
             flow_mags = flow_mags / flow_mags.amax((-3, -2), True).clamp(min=eps)
         return flow_mags
+
+    def compute_mean_motion_map(self,
+                                flows,
+                                normalize_per_sample=False,
+                                normalize=True,
+                                dim=-4,
+                                eps=1e-2):
+        if len(flows.shape) == 5:
+            flow_mags = self.compute_flow_samples_magnitude(flows,
+                                                            normalize=normalize_per_sample,
+                                                            dim=dim,
+                                                            eps=eps)
+            motion_map = flow_mags.mean(-1)
+        else: # just normalize the input distribution
+            motion_map = flows
+            normalize = True
+            
+        if normalize:
+            motion_map = motion_map - motion_map.amin((-2, -1), True)
+            motion_map = motion_map / motion_map.amax((-2, -1), True).clamp(min=eps)
+        return motion_map
     
     def create_motion_counterfactuals(self,
                                       x,
@@ -412,6 +445,8 @@ class FlowGenerator(PredictorBasedGenerator):
                                          do_filter=True,
                                          **kwargs):
 
+        self.set_input(x)
+
         def _sample_patches(dist, num_visible):
             return self.sample_patches_from_energy(energy=dist,
                                                    num_samples=num_samples,
@@ -432,7 +467,8 @@ class FlowGenerator(PredictorBasedGenerator):
             fix_passive=True,
             **kwargs
         )
-        flows = rearrange(flows.squeeze(1), '(b s) c h w -> b c h w s', b=x.size(0))
+        flows = self._batch_to_samples(flows)
+        # flows = rearrange(flows.squeeze(1), '(b s) c h w -> b c h w s', b=x.size(0))
 
         if (self.flow_sample_filter is not None) and do_filter:
             flows, filter_mask = self.flow_sample_filter(flows, active_patches)

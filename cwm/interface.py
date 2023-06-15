@@ -53,6 +53,7 @@ class CounterfactualPredictionInterface(object):
 
     def __init__(self, axes, G,
                  x=None, model_kwargs={},
+                 initial_flow_samples=None,
                  patch_selector=None,
                  size=[224,224],
                  bbox_corners=None,
@@ -100,6 +101,7 @@ class CounterfactualPredictionInterface(object):
         self.x = x
         self._model_kwargs = {k:v for k,v in model_kwargs.items()}
         self._reset_masks()
+
 
         ## how many patches to reveal on a click
         self.click_patch_width = click_patch_width
@@ -168,6 +170,10 @@ class CounterfactualPredictionInterface(object):
         self._flow_corrs = self._num_flow_samples = None
         self.seed = seed
         self.rng = np.random.RandomState(seed=seed)
+
+        ## initialize with samples computed elsewhere
+        if initial_flow_samples is not None:
+            self.flow_samples_list = torch.unbind(initial_flow_samples, -1)
 
         # choose some preset shifts if passed
         self.set_preset_shifts(preset_shifts)
@@ -450,7 +456,9 @@ class CounterfactualPredictionInterface(object):
             self.show_last_segment(samples[0], ax=self.corr_ax)
             return
 
-        samples = torch.stack(samples, -1)[:,0]
+        samples = torch.stack(samples, -1)
+        if len(samples.shape) == 6:
+            samples = samples[:,0]
         if (self._flow_corrs is None) or (self._num_flow_samples != samples.size(-1)):
             ## recompute
             self._flow_corrs = None
@@ -738,8 +746,10 @@ class CounterfactualPredictionInterface(object):
                               num_samples=10,
                               num_active_patches=1,
                               num_passive_patches=1,
+                              power=1,
                               resample=False,
                               overlay=False,
+                              marker_color=[1,0,1],
                               **kwargs):
         corrmat = self._get_corrmat(num_samples,
                                     num_active_patches,
@@ -779,22 +789,25 @@ class CounterfactualPredictionInterface(object):
             corr_img = corrmat[:,:,p[0]//s[0],p[1]//s[1]]
             corr_img = corr_img - corr_img.amin((-2,-1))
             corr_img = corr_img / corr_img.amax((-2,-1)).clamp(min=1e-3)
+            corr_img = corr_img ** power
             _img = self.G.get_masked_pred_patches(self.G.x,
                                                   self.G.generate_mask_from_patch_idx_list([p]),
-                                                  fill_value=[1,0,1])[:,1]
+                                                  fill_value=marker_color)[:,1]
 
             if overlay:
+                _img = transforms.Resize(corr_img.shape[-2:])(_img)
                 vis_tensor(corr_img * _img, ax=axes[row, col*2])
             else:
                 vis_tensor(_img, ax=axes[row, col*2])
 
-            vis_tensor(corrmat[:,:,p[0]//s[0],p[1]//s[1]], ax=axes[row, col*2 + 1])
+            vis_tensor(corrmat[:,:,p[0]//s[0],p[1]//s[1]] ** power, ax=axes[row, col*2 + 1])
             axes[row,col*2].set_xticks([])
             axes[row,col*2].set_yticks([])
             axes[row,col*2+1].set_xticks([])
             axes[row,col*2+1].set_yticks([])
 
-        plt.suptitle('/'.join(self.G._predictor_load_path.split('/')[-2:]), fontsize=16, va='bottom')
+        if hasattr(self.G, '_predictor_load_path'):
+            plt.suptitle('/'.join(self.G._predictor_load_path.split('/')[-2:]), fontsize=16, va='bottom')
         plt.tight_layout()
         plt.show()
         return points
