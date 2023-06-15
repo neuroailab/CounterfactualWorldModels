@@ -48,11 +48,13 @@ Users can upload their own images on which to run counterfactuals.
 
 Run the jupyter notebook `CounterfactualWorldModels/demo/MovabilityAndMotionCovariance.ipynb`
 
-#### Example estimates of movability and counterfactual motion covariance at selected (cyan) points
+#### Example estimate of movability 
 ![image](./demo/predictions/movability.png)
+
+#### Example estimate of counterfactual motion covariance at selected (cyan) points
 ![image](./demo/predictions/motion_covariance.png)
 
-## Coming Soon!
+### Coming Soon!
 - [ ] Iterative algorithms for segmenting Spelke objects
 - [ ] Using counterfactuals to estimate other scene properties
 - [ ] Model training code
