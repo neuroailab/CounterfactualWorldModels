@@ -2,7 +2,7 @@
 An approach to building pure vision foundation models by prompting masked predictors with "counterfactual" visual inputs.
 
 This is the official implementation of [Unifying (Machine) Vision via Counterfactual World Modeling](https://arxiv.org/abs/2306.01828)
-![image](./cwm.png)
+![image](./cwm.png).
 
 ## Setup
 We recommend installing required packages in a virtual environment, e.g. with venv or conda.
