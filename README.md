@@ -14,15 +14,9 @@ Weights are currently available for two VMAEs trained with the _temporall-factor
 
 See demo jupyter notebooks for urls to download these weights and load them into VMAEs.
 
-## Run a demo of making factual and counterfactual predictions
+### Run a demo of making factual and counterfactual predictions
 
 Run the jupyter notebook `CounterfactualWorldModels/demo/FactualAndCounterfactual.ipynb`
-
-## Run a demo of segmenting Spelke objects by applying motion-counterfactuals
-
-Run the jupyter notebook `CounterfactualWorldModels/demo/SpelkeObjectSegmentation.ipynb`
-
-Users can upload their own images on which to run counterfactuals.
 
 #### factual predictions
 ![image](./demo/predictions/factual_predictions.png)
@@ -30,8 +24,28 @@ Users can upload their own images on which to run counterfactuals.
 #### counterfactual predictions
 ![image](./demo/predictions/counterfactual_predictions.png)
 
+### Run a demo of segmenting Spelke objects by applying motion-counterfactuals
+
+Run the jupyter notebook `CounterfactualWorldModels/demo/SpelkeObjectSegmentation.ipynb`
+
+Users can upload their own images on which to run counterfactuals.
+
+#### Example Spelke objects from interactive motion counterfactuals
+![image](./demo/predictions/spelke_object0.png)
+![image](./demo/predictions/spelke_object1.png)
+![image](./demo/predictions/spelke_object2.png)
+![image](./demo/predictions/spelke_object3.png)
+
+### Run a demo of estimating the movability of elements of a scene
+
+Run the jupyter notebook `CounterfactualWorldModels/demo/MovabilityAndMotionCovariance.ipynb`
+
+#### Example estimates of movability and counterfactual motion covariance at selected points
+![image](./demo/predictions/movability.png)
+![image](./demo/predictions/motion_covariance.png)
+
+
 ## Coming Soon!
-- [x] Run counterfactual simulations (a.k.a. predictions) on user-supplied images
-- [ ] Head-motion (i.e. IMU)-conditioned prediction models
-- [x] Clicking-based Spelke object segmentation interface
-- [ ] Run motion counterfactuals with different patches moved in different directions
+- [ ] Iterative algorithms for segmenting Spelke objects
+- [ ] Using counterfactuals to estimate other scene properties
+- [ ] Model training code
