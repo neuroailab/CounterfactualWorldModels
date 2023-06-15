@@ -59,7 +59,7 @@ def load_raft_model(load_path=default_raft_ckpt,
                     output_dim=None,
                     **kwargs):
 
-    if (load_path is None) or (not os.path.exists(load_path)):
+    if ((load_path is None) or (not os.path.exists(load_path))) and (output_dim is None):
         print("%s is not a valid raft checkpoint" % load_path)
         raise ValueError("You must download RAFT checkpoints with cwm/models/raft/download_raft_checkpoints.sh\n" + \
                          "Checkpoints will be downloaded to CounterfactualWorldModels/checkpoints/raft_checkpoints/")

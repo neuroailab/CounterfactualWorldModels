@@ -2,6 +2,128 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.transforms as transforms
+
+from cwm.models.utils import sample_from_energy
+from cwm.models.masking import (MaskingGenerator,
+                                upsample_masks)
+
+class EnergySamplingMaskingGenerator(MaskingGenerator):
+    """Sample unmasked patches that are high on motion energy"""
+    
+    def __init__(self,
+                 input_size,
+                 mask_ratio,
+                 seed=0,
+                 resize=True,
+                 temperature=None,
+                 clumping_factor=1,
+                 pool_mode='mean',
+                 eps=1e-9,
+                 energy_power=1,
+                 **kwargs
+    ):
+
+        
+        super(EnergySamplingMaskingGenerator, self).__init__(
+            input_size=input_size,
+            mask_ratio=mask_ratio,
+            clumping_factor=clumping_factor,
+            seed=seed,
+            **kwargs)
+        self.motion_energy_density = nn.Identity(inplace=True)
+
+        ## if self.resize, resize the input movie bilinearly before estimating energy
+        self.resize = transforms.Resize((self.height, self.width)) if resize else (lambda x:x)
+        self.pool_mode = pool_mode
+
+        ## clumping factor controls how large the visible patches are
+        self.cf = clumping_factor
+
+        ## temperature controls how biased sampling is toward motion.
+        ## temperature of 0 ==> uniform sampling
+        ## temperature of inf ==> argmax(motion) sampling
+        ## temperature of None ==> no rescaling of density
+        self.temperature = temperature
+        self.eps = eps
+        self.energy_power = energy_power
+
+    def boltzmann(self, x):
+        x = x - x.amax((-2,-1), keepdim=True)
+        return torch.exp(x * self.temperature)
+
+    def _get_pool_func(self, k):
+        if self.pool_mode == 'mean':
+            return nn.AvgPool2d(k, stride=k)
+        elif self.pool_mode == 'max':
+            return nn.MaxPool2d(k, stride=k)
+        elif self.pool_mode == 'min':
+            return lambda x: -nn.MaxPool2d(k, stride=k)(-x)
+
+    def sample_mask_per_frame(self, video):
+        energy = self.motion_energy_density(video).view(-1, 1, *video.shape[-2:]) # [_BT,1,H,W]
+        H,W = energy.shape[-2:]
+        assert (H % self.height == 0) and (W % self.width == 0)
+        if (H != self.height) or (W != self.width):
+            pool_kernel_size = ((H * self.cf) // self.height, (W * self.cf) // self.width)
+            pool_func = self._get_pool_func(pool_kernel_size)
+            energy = pool_func(energy)
+            
+        if self.temperature is not None:
+            energy = self.boltzmann(energy)
+
+        num_points = (self.num_patches_per_frame - self.num_masks_per_frame) // (self.cf**2)
+        if self.randomize_num_visible:
+            num_points = self.rng.randint(low=0, high=(num_points + 1))
+        visible = sample_from_energy(
+            torch.pow(energy, self.energy_power),
+            binarize=True,
+            num_points=max(num_points, 1),
+            eps=self.eps,
+            normalize=True
+        ) > 0.5
+        if num_points == 0:
+            visible = torch.zeros_like(visible)
+        if self.cf > 1:
+            visible = upsample_masks(visible, size=(self.height, self.width))
+        mask = torch.logical_not(visible).flatten(1) # [_BT,N]
+        return mask
+
+    def forward(self, video, num_frames=None):
+        shape = video.shape
+        if len(shape) == 4:
+            video = self.resize(video)
+            video = video.unsqueeze(1)
+        else:
+            assert len(shape) == 5, shape
+            video = torch.stack(list(map(self.resize, torch.unbind(video, 1)), 1))
+        B = video.size(0)
+        masks = self.sample_mask_per_frame(video)
+        masks = masks.view(B, -1, masks.shape[-1]).flatten(1)
+        if B == 1 and not self.always_batch:
+            masks = masks.squeeze(0)
+
+        if self.visible_frames > 0:
+            vis = torch.zeros(
+                (B, 1, self.height, self.width), dtype=torch.bool)
+            vis = vis.view(masks.shape).to(masks.device)
+            masks = torch.cat(([vis]*self.visible_frames) + [masks], -1)
+            
+        return masks
+
+class RotatedTableEnergyMaskingGenerator(EnergySamplingMaskingGenerator):
+    
+    def __init__(self, input_size, mask_ratio, visible_frames=1, seed=0,
+                 *args, **kwargs):
+
+        super().__init__(
+            input_size=(
+                input_size[0]-visible_frames, *input_size[1:]),
+            mask_ratio=mask_ratio,
+            visible_frames=visible_frames,
+            seed=seed,
+            *args, **kwargs)
+        self.visible_frames = visible_frames            
 
 class FlowSampleFilter(nn.Module):
     """

@@ -7,6 +7,8 @@ import sys
 import matplotlib
 import matplotlib.pyplot as plt
 
+from functools import partial
+
 from PIL import Image
 import torchvision.transforms as transforms
 from torchvision.transforms import ToPILImage
@@ -16,10 +18,15 @@ import cwm.models.prediction as prediction
 import cwm.models.perturbation as perturbation
 import cwm.models.utils as utils
 import cwm.data.utils as data_utils
+from cwm.models.segmentation import FlowGenerator
 
 from cwm.vis_utils import imshow as vis_tensor
 from cwm.models.masking import RectangularizeMasks
 
+
+compute_flow_cov = partial(
+    FlowGenerator.compute_flow_corrs,
+    use_covariance=True)
 
 class Dummy():
     def __init__(self):
@@ -46,11 +53,13 @@ class CounterfactualPredictionInterface(object):
 
     def __init__(self, axes, G,
                  x=None, model_kwargs={},
+                 initial_flow_samples=None,
                  patch_selector=None,
                  size=[224,224],
                  bbox_corners=None,
                  frame=0,
                  device='cpu',
+                 click_patch_width=1,
                  static=True,
                  static_head_motion=True,
                  max_speed=None,
@@ -58,6 +67,7 @@ class CounterfactualPredictionInterface(object):
                  preset_shifts=None,
                  sample_batch_size=8,
                  max_samples_per_batch=32,
+                 covmat_downsample=2,
                  normalize_flow_magnitude=False,
                  show_ticks=True,
                  show_error_diff=False,
@@ -91,6 +101,10 @@ class CounterfactualPredictionInterface(object):
         self.x = x
         self._model_kwargs = {k:v for k,v in model_kwargs.items()}
         self._reset_masks()
+
+
+        ## how many patches to reveal on a click
+        self.click_patch_width = click_patch_width
 
         ## running a batch of samples from a single init
         self.sample_batch_size = sample_batch_size
@@ -150,11 +164,16 @@ class CounterfactualPredictionInterface(object):
         self._passive_color = passive_color
 
         ## for showing segments
+        self._covmat_downsample = covmat_downsample
         self.counterfactual_inputs = []
         self.preds_list, self.flow_samples_list, self._corrmat_inds_list, self.shifts = [], [], [], []
         self._flow_corrs = self._num_flow_samples = None
         self.seed = seed
         self.rng = np.random.RandomState(seed=seed)
+
+        ## initialize with samples computed elsewhere
+        if initial_flow_samples is not None:
+            self.flow_samples_list = torch.unbind(initial_flow_samples, -1)
 
         # choose some preset shifts if passed
         self.set_preset_shifts(preset_shifts)
@@ -296,8 +315,16 @@ class CounterfactualPredictionInterface(object):
         _i,_j = i//self.G.patch_size[-2], j//self.G.patch_size[-1]
         T,H,W = self.G.mask_shape
         N = H*W
-        ind = (t % T) * N + _i * W + _j
-        mask[0,ind] = ~(mask[0,ind])
+        ois, ojs = range(self.click_patch_width), range(self.click_patch_width)
+        for oi in ois:
+            for oj in ojs:
+                __i = (_i + oi) % H
+                __j = (_j + oj) % W
+                ind = (t % T) * N + __i * W + __j
+                mask[0,ind] = ~(mask[0,ind])
+        
+        # ind = (t % T) * N + _i * W + _j
+        # mask[0,ind] = ~(mask[0,ind])
 
         return mask
 
@@ -429,14 +456,15 @@ class CounterfactualPredictionInterface(object):
             self.show_last_segment(samples[0], ax=self.corr_ax)
             return
 
-        samples = torch.stack(samples, -1)[:,0]
+        samples = torch.stack(samples, -1)
+        if len(samples.shape) == 6:
+            samples = samples[:,0]
         if (self._flow_corrs is None) or (self._num_flow_samples != samples.size(-1)):
             ## recompute
             self._flow_corrs = None
-            self._flow_corrs = flow_generator.SingleObjectFlowBasedSelector.compute_flow_corrs(
+            self._flow_corrs = compute_flow_cov(
                 samples,
-                downsample=downsample,
-                use_covariance=True).relu()
+                downsample=downsample).relu()
             self._num_flow_samples = samples.size(-1)
         s = downsample or 1
         self.imshow(ax=self.corr_ax, img=self._flow_corrs[:,:,i//s,j//s])
@@ -458,10 +486,9 @@ class CounterfactualPredictionInterface(object):
                                                     num_active_patches,
                                                     num_passive_patches,
                                                     **kwargs)
-        self._flow_corrs = flow_generator.SingleObjectFlowBasedSelector.compute_flow_corrs(
+        self._flow_corrs = compute_flow_cov(
             flow_samples,
             downsample=downsample,
-            use_covariance=use_covariance,
             **kwargs).relu()
         self._num_flow_samples = flow_samples.size(-1)
         return self._flow_corrs
@@ -588,7 +615,7 @@ class CounterfactualPredictionInterface(object):
 
         elif str(event.key).upper() == 'X': ## extract segment
             self._corrmat_inds_list.append([i,j])
-            self.show_corrmat_segment(i, j, sample_inds=None)
+            self.show_corrmat_segment(i, j, sample_inds=None, downsample=self._covmat_downsample)
 
         elif str(event.key).upper() == 'E': ## look at true flow and error
             mask = torch.minimum(self.active_patches, self.passive_patches)
@@ -669,26 +696,25 @@ class CounterfactualPredictionInterface(object):
         active_patches = self.sample_random_patches(num_samples, num_active_patches)
         passive_patches = self.sample_random_patches(num_samples, num_passive_patches)
 
-        h_static = self.G.get_static_imu()
-        mask_context = torch.zeros(h_static.size(0), self.G.num_head_tokens).bool().to(h_static.device)
-        h_static = self.G.head_motion_generator.reshape_output(h_static)
         kwargs.update(copy.deepcopy(self._model_kwargs))
         if 'timestamps' in kwargs.keys():
             kwargs['timestamps'] = torch.tile(kwargs['timestamps'], (num_samples, 1))
 
         self.G.reset_padding_masks()
         with self.decorator:
-            _, flow_samples, _, _ = self.G.sample_counterfactual_flows_parallel(
-                active_sampled=active_patches,
-                passive_sampled=passive_patches,
+            ys, flow_samples = self.G.predict_counterfactual_videos_and_flows(
+                x=self._x.to(self.dtype),
+                active_patches=active_patches,
+                passive_patches=passive_patches,
+                shifts=None,
                 num_samples=num_samples,
-                frame=1,
-                get_original_flow=False,
-                fix_passive=True,
-                swap_active_passive=False,
-                x_context=h_static.expand(num_samples, -1, -1),
-                mask_context=mask_context.expand(num_samples, -1),
-                **kwargs)
+                sample_batch_size=num_samples,
+                mask_head_motion=False,
+                static_head_motion=self.static_head_motion,
+                **kwargs
+            )
+            flow_samples = rearrange(flow_samples[:,0], '(b s) c h w -> b c h w s', b=self._x.size(0))
+
         return flow_samples
 
     def show_random_correlogram(self, i=0, j=0,
@@ -711,7 +737,7 @@ class CounterfactualPredictionInterface(object):
                 self.G.reset_padding_masks()
 
 
-        self.show_corrmat_segment(i, j, sample_inds=None)
+        self.show_corrmat_segment(i, j, sample_inds=None, downsample=self._covmat_downsample)
 
     def visualize_correlogram(self,
                               num_points=4,
@@ -720,13 +746,16 @@ class CounterfactualPredictionInterface(object):
                               num_samples=10,
                               num_active_patches=1,
                               num_passive_patches=1,
+                              power=1,
                               resample=False,
                               overlay=False,
+                              marker_color=[1,0,1],
                               **kwargs):
         corrmat = self._get_corrmat(num_samples,
                                     num_active_patches,
                                     num_passive_patches,
                                     resample=resample,
+                                    downsample=self._covmat_downsample,
                                     **kwargs)
         size = corrmat.shape[-4:-2]
         s = self.x.size(-2) // size[-2], self.x.size(-1) // size[-1]
@@ -760,22 +789,25 @@ class CounterfactualPredictionInterface(object):
             corr_img = corrmat[:,:,p[0]//s[0],p[1]//s[1]]
             corr_img = corr_img - corr_img.amin((-2,-1))
             corr_img = corr_img / corr_img.amax((-2,-1)).clamp(min=1e-3)
+            corr_img = corr_img ** power
             _img = self.G.get_masked_pred_patches(self.G.x,
                                                   self.G.generate_mask_from_patch_idx_list([p]),
-                                                  fill_value=[1,0,1])[:,1]
+                                                  fill_value=marker_color)[:,1]
 
             if overlay:
+                _img = transforms.Resize(corr_img.shape[-2:])(_img)
                 vis_tensor(corr_img * _img, ax=axes[row, col*2])
             else:
                 vis_tensor(_img, ax=axes[row, col*2])
 
-            vis_tensor(corrmat[:,:,p[0]//s[0],p[1]//s[1]], ax=axes[row, col*2 + 1])
+            vis_tensor(corrmat[:,:,p[0]//s[0],p[1]//s[1]] ** power, ax=axes[row, col*2 + 1])
             axes[row,col*2].set_xticks([])
             axes[row,col*2].set_yticks([])
             axes[row,col*2+1].set_xticks([])
             axes[row,col*2+1].set_yticks([])
 
-        plt.suptitle('/'.join(self.G._predictor_load_path.split('/')[-2:]), fontsize=16, va='bottom')
+        if hasattr(self.G, '_predictor_load_path'):
+            plt.suptitle('/'.join(self.G._predictor_load_path.split('/')[-2:]), fontsize=16, va='bottom')
         plt.tight_layout()
         plt.show()
         return points
