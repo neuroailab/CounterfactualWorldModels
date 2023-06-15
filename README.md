@@ -20,7 +20,7 @@ See demo jupyter notebooks for urls to download these weights and load them into
 
 ## Demos of using CWMs to analyze physical properties of scenes
 
-These are a subset of the use cases described in [https://arxiv.org/abs/2306.01828](our paper).
+These are a subset of the use cases described in [our paper](https://arxiv.org/abs/2306.01828).
 
 ### Run a demo of making factual and counterfactual predictions
 
