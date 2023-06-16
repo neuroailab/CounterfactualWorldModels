@@ -173,7 +173,7 @@ class CounterfactualPredictionInterface(object):
 
         ## initialize with samples computed elsewhere
         if initial_flow_samples is not None:
-            self.flow_samples_list = torch.unbind(initial_flow_samples, -1)
+            self.flow_samples_list = [f for f in torch.unbind(initial_flow_samples, -1)]
 
         # choose some preset shifts if passed
         self.set_preset_shifts(preset_shifts)
@@ -452,6 +452,7 @@ class CounterfactualPredictionInterface(object):
         if sample_inds is None:
             sample_inds = range(len(self.flow_samples_list))
         samples = [self.flow_samples_list[i] for i in sample_inds]
+        samples = [fs.squeeze(1) for fs in samples]
         if len(samples) == 1:
             self.show_last_segment(samples[0], ax=self.corr_ax)
             return
