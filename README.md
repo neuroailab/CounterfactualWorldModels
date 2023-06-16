@@ -11,6 +11,8 @@ We recommend installing required packages in a virtual environment, e.g. with ve
 1. clone the repo: `git clone https://github.com/neuroailab/CounterfactualWorldModels.git`
 2. install requirements and `cwm` package: `cd CounterfactualWorldModels && pip install -e .`
 
+Note: If you want to run models on a CUDA backend with [Flash Attention](https://github.com/HazyResearch/flash-attention) (recommended), it needs to be installed separately via [these instructions](https://github.com/HazyResearch/flash-attention#installation-and-features).
+
 ### Pretrained Models
 Weights are currently available for two VMAEs trained with the _temporall-factored masking policy_:
 - A ViT-base VMAE with 8x8 patches, trained 3200 epochs on Kinetics400
