@@ -1,7 +1,5 @@
 # Counterfactual World Models
-This is the official implementation of 
-
-[Unifying (Machine) Vision via Counterfactual World Modeling](https://arxiv.org/abs/2306.01828)  
+This is the official implementation of [Unifying (Machine) Vision via Counterfactual World Modeling](https://arxiv.org/abs/2306.01828) by    
 Daniel M. Bear, Kevin Feigelis, Honglin Chen, Wanhee Lee, Rahul Venkatesh, Klemen Kotar, Alex Durango, Daniel L.K. Yamins
 
 See [Setup](#Setup) below to install. To reference our work, please use [Citation](#Citation).
