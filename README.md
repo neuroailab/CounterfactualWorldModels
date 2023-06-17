@@ -15,17 +15,19 @@ Beyond generating new, simulated scenes, properly prompting CWMs can reveal the 
 
 The provided notebook demos are a subset of the use cases described in [our paper](https://arxiv.org/abs/2306.01828).
 
-### Run a demo of making factual and counterfactual predictions
+### Making factual and counterfactual predictions with a pretrained CWM
 
 Run the jupyter notebook `CounterfactualWorldModels/demo/FactualAndCounterfactual.ipynb`
 
 #### factual predictions
+Given all of one frame and a few patches of a subsequent frame from a real video, a CWM makes predictions about the rest of the second frame. The ability to prompt the CWM with a small number of tokens relies on training with a very small number of patches revealed in the second frame. 
 ![image](./demo/predictions/factual_predictions.png)
 
-#### counterfactual predictions
+#### counterfactual simulations
+A small number of patches (colored) in a _single image_ can be selected to counterfactually move in a chosen direction, while other patches (black) are static. This produces object movement in the intended directions.
 ![image](./demo/predictions/counterfactual_predictions.png)
 
-### Run a demo of segmenting Spelke objects by applying motion-counterfactuals
+### Segmenting Spelke objects by applying motion-counterfactuals
 
 Run the jupyter notebook `CounterfactualWorldModels/demo/SpelkeObjectSegmentation.ipynb`
 
