@@ -64,6 +64,7 @@ Run the jupyter notebook `CounterfactualWorldModels/demo/MovabilityAndMotionCova
 ![image](./demo/predictions/motion_covariance.png)
 
 ### Coming Soon!
+- [ ] Fine control over counterfactuals (multiple patches moving in different directions)
 - [ ] Iterative algorithms for segmenting Spelke objects
 - [ ] Using counterfactuals to estimate other scene properties
 - [ ] Model training code
