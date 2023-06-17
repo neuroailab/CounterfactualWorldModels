@@ -7,9 +7,13 @@ See [Setup](#Setup) below.
 ![image](./cwm.png)
 
 
-## Demos of using CWMs to analyze physical properties of scenes
+## Demos of using CWMs to generate "counterfactual" simulations and analyze scenes
 
-These are a subset of the use cases described in [our paper](https://arxiv.org/abs/2306.01828).
+Counterfactual World Models (CWMs) can be prompted with "counterfactual" visual inputs: "What if?" questions about slightly perturbed versions of real scenes.
+
+Beyond generating new, simulated scenes, properly prompting CWMs can reveal the underlying physical structure of a scene. For instance, asking which points would also move along with a selected point is a way of segmenting a scene into independently movable "Spelke" objects.
+
+The provided notebook demos are a subset of the use cases described in [our paper](https://arxiv.org/abs/2306.01828).
 
 ### Run a demo of making factual and counterfactual predictions
 
