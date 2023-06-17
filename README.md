@@ -1,6 +1,6 @@
 # Counterfactual World Models
 This is the official implementation of [Unifying (Machine) Vision via Counterfactual World Modeling](https://arxiv.org/abs/2306.01828),
-an approach to building purely visual, unsupervised foundation models that can be prompted with "counterfactual" visual inputs: "What if?" questions about how a scene would change if reality were slightly different.
+an approach to building promptable, purely visual "foundation models."
 
 See [Setup](#Setup) below.
 
