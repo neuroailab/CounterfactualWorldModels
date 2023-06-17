@@ -19,11 +19,13 @@ The provided notebook demos are a subset of the use cases described in [our pape
 Run the jupyter notebook `CounterfactualWorldModels/demo/FactualAndCounterfactual.ipynb`
 
 #### Factual predictions
-Given all of one frame and a few patches of a subsequent frame from a real video, a CWM makes predictions about the rest of the second frame. The ability to prompt the CWM with a small number of tokens relies on training with a very small number of patches revealed in the second frame. 
+Given all of one frame and a few patches of a subsequent frame from a real video, a CWM makes predictions about the rest of the second frame. The ability to prompt the CWM with a small number of tokens relies on training with a very small number of patches revealed in the second frame.  
+
 ![image](./demo/predictions/factual_predictions.png)
 
 #### Counterfactual simulations
-A small number of patches (colored) in a _single image_ can be selected to counterfactually move in a chosen direction, while other patches (black) are static. This produces object movement in the intended directions.
+A small number of patches (colored) in a _single image_ can be selected to counterfactually move in a chosen direction, while other patches (black) are static. This produces object movement in the intended directions.  
+
 ![image](./demo/predictions/counterfactual_predictions.png)
 
 ### Segmenting Spelke objects by applying motion-counterfactuals
@@ -33,7 +35,8 @@ Run the jupyter notebook `CounterfactualWorldModels/demo/SpelkeObjectSegmentatio
 Users can upload their own images on which to run counterfactuals.
 
 #### Example Spelke objects from interactive motion counterfactuals
-In each row, one patch is selected to move "upward" (green square) and in the last two rows, one patch is selected to remain static (red square). The optical flow resulting from the simulation represents the CWM's implicit segmentation of the moved object. In the last row, the implied segment includes both the robot arm and the object it is grasping, as the CWM predicts they will move as a unit.
+In each row, one patch is selected to move "upward" (green square) and in the last two rows, one patch is selected to remain static (red square). The optical flow resulting from the simulation represents the CWM's implicit segmentation of the moved object. In the last row, the implied segment includes both the robot arm and the object it is grasping, as the CWM predicts they will move as a unit.  
+
 ![image](./demo/predictions/spelke_object0.png)
 ![image](./demo/predictions/spelke_object1.png)
 ![image](./demo/predictions/spelke_object2.png)
@@ -44,11 +47,13 @@ In each row, one patch is selected to move "upward" (green square) and in the la
 Run the jupyter notebook `CounterfactualWorldModels/demo/MovabilityAndMotionCovariance.ipynb`
 
 #### Example estimate of movability 
-A number of motion counterfactuals were randomly sampled (i.e. patches placed throughout the input image and moved.) This produces a "movability" heatmap of which parts of a scene tend to move and which tend to remain static. Spelke objects are inferred to be most movable, while the background rarely moves.
+A number of motion counterfactuals were randomly sampled (i.e. patches placed throughout the input image and moved.) This produces a "movability" heatmap of which parts of a scene tend to move and which tend to remain static. Spelke objects are inferred to be most movable, while the background rarely moves.  
+
 ![image](./demo/predictions/movability.png)
 
 #### Example estimate of counterfactual motion covariance at selected (cyan) points
-By inspecting the pixel-pixel covariance across many motion counterfactuals, we can estimate which parts of a scene move together on average. Shown are maps of what tends to move along with a selected point (cyan.) Objects adjacent to one another tend to move together, as some motion counterfactuals include collisions between them; however, motion counterfactuals in the appropriate direction can isolate single Spelke objects (see above.)
+By inspecting the pixel-pixel covariance across many motion counterfactuals, we can estimate which parts of a scene move together on average. Shown are maps of what tends to move along with a selected point (cyan.) Objects adjacent to one another tend to move together, as some motion counterfactuals include collisions between them; however, motion counterfactuals in the appropriate direction can isolate single Spelke objects (see above.)  
+
 ![image](./demo/predictions/motion_covariance.png)
 
 ## Setup
