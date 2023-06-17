@@ -81,7 +81,8 @@ setup(
     install_requires=[
         'numpy',
         'scipy',
-        'matplotlib',
+        'matplotlib==3.5.2',
+        'itermplot',
         'h5py',
         'torch',
         'torchvision',
