@@ -4,10 +4,9 @@ This is the official implementation of
 [Unifying (Machine) Vision via Counterfactual World Modeling](https://arxiv.org/abs/2306.01828)  
 Daniel M. Bear, Kevin Feigelis, Honglin Chen, Wanhee Lee, Rahul Venkatesh, Klemen Kotar, Alex Durango, Daniel L.K. Yamins
 
-See [Setup](#Setup) below and use [Citation](#Citation) to reference our work.
+See [Setup](#Setup) below to install. To reference our work, please use [Citation](#Citation).
 
 ![image](./cwm.png)
-
 
 ## Demos of using CWMs to generate "counterfactual" simulations and analyze scenes
 
