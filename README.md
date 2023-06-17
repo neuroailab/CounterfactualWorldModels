@@ -1,7 +1,7 @@
 # Counterfactual World Models
 This is the official implementation of [**Unifying (Machine) Vision via Counterfactual World Modeling**](https://arxiv.org/abs/2306.01828).
 
-See [Setup](#Setup) below to install. Please reference our work as [Bear, D.M._et al._(2023) arxiv:2306.01828](#Citation).
+See [Setup](#Setup) below to install. Please reference our work as [Bear, D.M._ et al._(2023)](#Citation).
 
 ![image](./cwm.png)
 
