@@ -15,11 +15,17 @@ Note: If you want to run models on a CUDA backend with [Flash Attention](https:/
 it needs to be installed separately via [these instructions](https://github.com/HazyResearch/flash-attention#installation-and-features).
 
 ### Pretrained Models
-Weights are currently available for two VMAEs trained with the _temporall-factored masking policy_:
+Weights are currently available for three VMAEs trained with the _temporally-factored masking policy_:
 - A ViT-base VMAE with 8x8 patches, trained 3200 epochs on Kinetics400
 - A ViT-large VMAE with 4x4 patches, trained 100 epochs on Kinetics700 + Moments + (20% of Ego4D)
+- A ViT-base VMAE with 4x4 patches, conditioned on both IMU and RGB video data (otherwise same as above)
 
 See demo jupyter notebooks for urls to download these weights and load them into VMAEs.
+
+These notebooks also download weights for other models required for some computations:
+- A ViT that predicts IMU from a 2-frame RGB movie (required for running the IMU-conditioned VMAE)
+- A pretrained [RAFT](https://github.com/princeton-vl/RAFT) optical flow model
+- A pretrained RAFT _architecture_ optimized to predict keypoints in a single image. (See paper for definition.)
 
 ## Demos of using CWMs to analyze physical properties of scenes
 
