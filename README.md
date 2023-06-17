@@ -1,31 +1,10 @@
 # Counterfactual World Models
 An approach to building pure vision foundation models by prompting masked predictors with "counterfactual" visual inputs.
 
-This is the official implementation of [Unifying (Machine) Vision via Counterfactual World Modeling](https://arxiv.org/abs/2306.01828).
+This is the official implementation of [Unifying (Machine) Vision via Counterfactual World Modeling](https://arxiv.org/abs/2306.01828). See [Setup](#Setup) below.
 
 ![image](./cwm.png)
 
-## Setup
-We recommend installing required packages in a virtual environment, e.g. with venv or conda.
-
-1. clone the repo: `git clone https://github.com/neuroailab/CounterfactualWorldModels.git`
-2. install requirements and `cwm` package: `cd CounterfactualWorldModels && pip install -e .`
-
-Note: If you want to run models on a CUDA backend with [Flash Attention](https://github.com/HazyResearch/flash-attention) (recommended), 
-it needs to be installed separately via [these instructions](https://github.com/HazyResearch/flash-attention#installation-and-features).
-
-### Pretrained Models
-Weights are currently available for three VMAEs trained with the _temporally-factored masking policy_:
-- A ViT-base VMAE with 8x8 patches, trained 3200 epochs on Kinetics400
-- A ViT-large VMAE with 4x4 patches, trained 100 epochs on Kinetics700 + Moments + (20% of Ego4D)
-- A ViT-base VMAE with 4x4 patches, conditioned on both IMU and RGB video data (otherwise same as above)
-
-See demo jupyter notebooks for urls to download these weights and load them into VMAEs.
-
-These notebooks also download weights for other models required for some computations:
-- A ViT that predicts IMU from a 2-frame RGB movie (required for running the IMU-conditioned VMAE)
-- A pretrained [RAFT](https://github.com/princeton-vl/RAFT) optical flow model
-- A pretrained RAFT _architecture_ optimized to predict keypoints in a single image. (See paper for definition.)
 
 ## Demos of using CWMs to analyze physical properties of scenes
 
@@ -62,6 +41,29 @@ Run the jupyter notebook `CounterfactualWorldModels/demo/MovabilityAndMotionCova
 
 #### Example estimate of counterfactual motion covariance at selected (cyan) points
 ![image](./demo/predictions/motion_covariance.png)
+
+## Setup
+We recommend installing required packages in a virtual environment, e.g. with venv or conda.
+
+1. clone the repo: `git clone https://github.com/neuroailab/CounterfactualWorldModels.git`
+2. install requirements and `cwm` package: `cd CounterfactualWorldModels && pip install -e .`
+
+Note: If you want to run models on a CUDA backend with [Flash Attention](https://github.com/HazyResearch/flash-attention) (recommended), 
+it needs to be installed separately via [these instructions](https://github.com/HazyResearch/flash-attention#installation-and-features).
+
+### Pretrained Models
+Weights are currently available for three VMAEs trained with the _temporally-factored masking policy_:
+- A [ViT-base VMAE with 8x8 patches](https://counterfactual-world-modeling.s3.amazonaws.com/cwm_baseVMAE_224px_8x8patches_2frames.pth), trained 3200 epochs on Kinetics400
+- A [ViT-large VMAE with 4x4 patches](https://counterfactual-world-modeling.s3.amazonaws.com/cwm_largeVMAE_224px_4x4patches_2frames.pth), trained 100 epochs on Kinetics700 + Moments + (20% of Ego4D)
+- A [ViT-base VMAE with 4x4 patches](https://counterfactual-world-modeling.s3.amazonaws.com/cwm_IMUcond_conjVMAE_224px_4x4patches_2frames.pth), conditioned on both IMU and RGB video data (otherwise same as above)
+
+See demo jupyter notebooks for urls to download these weights and load them into VMAEs.
+
+These notebooks also download weights for other models required for some computations:
+- A [ViT that predicts IMU](https://counterfactual-world-modeling.s3.amazonaws.com/flow2imu_conjVMAE_224px.pth) from a 2-frame RGB movie (required for running the IMU-conditioned VMAE)
+- A pretrained [RAFT](https://github.com/princeton-vl/RAFT) optical flow model
+- A pretrained [RAFT _architecture_ optimized to predict keypoints](https://counterfactual-world-modeling.s3.amazonaws.com/raft_consolidated_keypoint_predictor.pth) in a single image. (See paper for definition.)
+
 
 ### Coming Soon!
 - [ ] Fine control over counterfactuals (multiple patches moving in different directions)
