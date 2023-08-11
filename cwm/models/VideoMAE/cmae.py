@@ -100,7 +100,7 @@ class ChannelMaeDecoder(nn.Module):
     def get_classifier(self):
         return self.head
 
-    def reset_classifier(self, num_classes, global_pool=''):
+    def reset_classifier(self, num_classes):
         self.num_classes = num_classes
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
@@ -289,7 +289,270 @@ class ChannelMaeEncoder(ChannelMaeDecoder):
         x = self.head(x)
         return x
 
+class ChannelMae(nn.Module):
+    """A ChannelMaeEncoder, ChannelMaeDecoder, and channel heads"""
+    def __init__(
+            self,
+            encoder_params: Dict = {},
+            decoder_params: Dict = {},
+            head_params: Optional[Dict] = None,
+            preprocessor: Optional[Callable] = None,
+            use_flash_attention: bool = False
+    ) -> None:
 
+        super().__init__()
+
+        # preprocessing to the input
+        self.preprocess = preprocessor() if (preprocessor is not None) else nn.Identity()
+
+        # encoder and decoder
+        self.encoder_params = copy.deepcopy(encoder_params)
+        self.decoder_params = copy.deepcopy(decoder_params)
+        self.head_params = copy.deepcopy(head_params) if head_params is not None else None
+
+        enc_block_kwargs = self.encoder_params.get('block_kwargs', {})
+        dec_block_kwargs = self.decoder_params.get('block_kwargs', {})
+        enc_block_kwargs.update({'flash_attention': use_flash_attention})
+        dec_block_kwargs.update({'flash_attention': use_flash_attention})        
+
+        if self.head_params is not None:
+            head_block_kwargs = self.head_params.get('block_kwargs', {})
+            head_block_kwargs.update({'flash_attention': use_flash_attention})
+
+
+        self.encoder = self._build_encoder(params=self.encoder_params)
+        if self.decoder_params.get('depth', 4) > 0:
+            self.decoder = self._build_decoder(params=self.decoder_params)
+            self.encoder_to_decoder = nn.Linear(self.encoder.embed_dim, self.decoder.embed_dim, bias=False)
+        else:
+            self.decoder, self.encoder_to_decoder = None
+
+        # channel heads (decoders for each channel group)
+        self.channel_heads = self._build_channel_heads(params=self.head_params)
+
+        # mask token and positional embedding
+        self._init_mask_token()
+        self.pos_embed = get_sinusoid_encoding_table(self.encoder.num_patches, self.decoder.embed_dim)
+
+        # init weights
+        self.apply(self._init_weights)
+
+    def _init_mask_token(self) -> None:
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, self.decoder.embed_dim))
+        trunc_normal_(self.mask_token, std=0.02)        
+
+    def _build_encoder(self, params: Dict = {}) -> nn.Module:
+        return ChannelMaeEncoder(**params)
+
+    def _build_decoder(self, params: Dict = {}) -> nn.Module:
+        return ChannelMaeDecoder(**params)
+
+    def _build_channel_heads(self, params: Optional[Dict] = None) -> nn.ModuleList:
+        """
+        Different channels are decoded with different heads.
+        If no params are passed, these heads are just linear layers.
+        """
+        num_classes_per_head = [
+            math.prod(self.patch_size) * in_chans for in_chans in self.encoder.channel_partition
+        ]
+
+        embed_dim = self.decoder.embed_dim if self.decoder is not None else self.encoder.embed_dim
+
+        # linear layers
+        if params is None:
+            return nn.ModuleList(
+                [
+                    nn.Linear(
+                        in_features=embed_dim,
+                        out_features=num_classes,
+                        bias=True
+                        )
+                    for num_classes in num_classes_per_head
+                ]
+            )
+
+        # else channel heads are ChannelMaeDecoders
+        channel_heads = nn.ModuleList(
+            [
+                nn.Sequential(
+                    # linear decoder to head
+                    nn.Linear(
+                        in_features=embed_dim,
+                        out_features=params.get('embed_dim', embed_dim),
+                        bias=False
+                    ),
+                    # transformer
+                    self._build_decoder(params)
+                )
+                for _ in range(self.num_channel_groups)
+            ]
+        )
+        for group_idx, num_classes in enumerate(num_classes_per_head):
+            channel_heads[group_idx][1].reset_classifier(num_classes=num_classes)
+
+        return channel_heads
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def _apply_channel_heads(
+            self,
+            x: torch.Tensor,
+            mask: torch.Tensor,
+            pos_embed: torch.Tensor
+    ) -> List[torch.Tensor]:
+        """
+        Apply the channel heads to tokens after the decoder stage.
+        Only return the masked tokens.
+        """
+
+        B, _, C = pos_embed.shape
+
+        # figure out which tokens belong to which channel group
+        ps = torch.split(pos_embed, self.token_channel_group_splits, dim=1)
+        ms = torch.split(mask, self.token_channel_group_splits, dim=1)
+        vis_ns = [
+            ps[group_idx][~ms[group_idx]].reshape(B, -1, C).shape[1]
+            for group_idx in range(self.num_channel_groups)
+        ]
+
+        masked_ns = [
+            ps[group_idx][ms[group_idx]].reshape(B, -1, C).shape[1]
+            for group_idx in range(self.num_channel_groups)
+        ]
+
+        # separate the visible from the masked tokens
+        x_vis, x_masked = torch.split(x, (sum(vis_ns), sum(masked_ns)), dim=1)
+        xs_vis = torch.split(x_vis, vis_ns, dim=1)
+        xs_masked = torch.split(x_masked, masked_ns, dim=1)
+
+        # if heads are just linear layers
+        if isinstance(self.channel_heads[0], nn.Linear):
+            return [
+                self.channel_heads[group_idx](xs_masked[group_idx])
+                for group_idx in range(self.num_channel_groups)
+            ]
+
+        # if heads are transformer Decoders
+        return [
+            self.channel_heads[group_idx](
+                torch.cat([xs_vis[group_idx], xs_masked[group_idx]], dim=1),
+                return_token_num=masked_ns[group_idx]
+            )
+            for group_idx in range(self.num_channel_groups)
+        ]
+
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> List[torch.Tensor]:
+        """Pass in an image tensor, mask it, and get the predicted masked patches for each channel group"""
+
+        x = self.preprocess(x)
+
+        # encoder runs patch embed, then the encoder blocks on unmasked tokens
+        x_vis = self.encoder(x, mask)
+        if self.decoder is None:
+            return x_vis
+
+        # embed in decoder dimension
+        x_vis = self.encoder_to_decoder(x_vis)
+        B, _, C = x_vis.shape
+
+        # apply pos embed to decoder inputs
+        decoder_pos_embed = self.pos_embed.type_as(x).to(x.device).clone().detach()
+
+        # get and apply the positional embedding for the decoder via the mask
+        mask = mask.unsqueeze(dim=-1).repeat(1, 1, C)
+        pos_embed_vis = decoder_pos_embed[~mask].reshape(B, -1, C)
+        pos_embed_mask = decoder_pos_embed[mask].reshape(B, -1, C)
+
+        # create full decoder input, with mask tokens
+        x_vis = x_vis + pos_embed_vis
+        mask_token_w_pos_emb = self.mask_token + pos_embed_mask
+        x_full = torch.cat([x_vis, mask_token_w_pos_emb], dim=1)
+
+        # run the decoder, keeping all the tokens
+        x = self.decoder(x_full, return_token_num=-1)
+
+        # split the decoder output into tokens per channel, then apply output heads
+        ys = self._apply_channel_heads(x, mask, decoder_pos_embed)
+
+        return ys
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {'pos_embed', 'cls_token', 'mask_token'}
+
+    @property
+    def patch_size(self):
+        return self.encoder.patch_size
+
+    @property
+    def patch_dim(self):
+        return math.prod(self.patch_size)
+
+    @property
+    def mask_size(self):
+        return self.encoder.mask_size
+
+    @property
+    def image_size(self):
+        return self.encoder.image_size
+
+    @property
+    def num_channel_groups(self):
+        return self.encoder.num_channel_groups
+
+    @property
+    def num_tokens_per_channel_group(self):
+        return int(self.num_patches // self.num_channel_groups)
+
+    @property
+    def token_channel_group_splits(self):
+        return (self.num_tokens_per_channel_group, ) * self.num_channel_groups
+
+    @property
+    def channel_partition(self):
+        return self.encoder.params.inp.channel_partition
+
+    @property
+    def channel_group_start_inds(self):
+        return [0] + [
+            i.item() for i in torch.cumsum(torch.tensor(self.channel_partition), dim=0)
+        ]
+
+    @property
+    def num_channels(self):
+        return sum(self.channel_partition)
+
+    @property
+    def num_patches(self):
+        return self.encoder.num_patches
+
+    @property
+    def num_tokens(self):
+        return self.encoder.num_patches
+
+    @property
+    def encoder_depth(self):
+        return self.encoder.get_num_layers()
+
+    @property
+    def decoder_depth(self):
+        return self.encoder.get_num_layers()
+
+    
+        
+    
+
+
+        
+
+        
 
     
                     
