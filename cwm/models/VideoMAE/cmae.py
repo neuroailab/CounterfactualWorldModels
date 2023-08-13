@@ -10,6 +10,7 @@ from einops import rearrange
 
 from functools import partial
 
+from cwm.models.patches import Patchify
 from cwm.models.VideoMAE.vmae import (PretrainVisionTransformerDecoder,
                                       trunc_normal_)
 from cwm.models.VideoMAE.conjoined_vmae import PaddedVisionTransformer
@@ -167,7 +168,14 @@ class ChannelMaeEncoder(ChannelMaeDecoder):
         self.in_channels = self.num_channels = in_channels
         self.patch_size = _int_to_two_tuple(patch_size)
         self.ph, self.pw = self.patch_size
-        self.embed_dim = embed_dim        
+        self.embed_dim = embed_dim
+
+        # patchifier for computing labels
+        self.patchifier = Patchify(
+            self.patch_size,
+            temporal_dim=2,
+            squeeze_channel_dim=False
+        )
 
         # for properties of parent class that involve time dimension        
         self.pt = 1
@@ -401,6 +409,13 @@ class ChannelMae(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
+    def patchify(self, x: torch.Tensor, squeeze_channel_dim: bool = False):
+
+        x = self.encoder.patchifier(x)
+        if squeeze_channel_dim:
+            x = x.view(*x.shape[:2], self.patch_dim * x.shape[-1])
+        return x
+
     def _apply_channel_heads(
             self,
             x: torch.Tensor,
@@ -441,10 +456,12 @@ class ChannelMae(nn.Module):
 
         # if heads are transformer Decoders
         return [
-            self.channel_heads[group_idx](
-                torch.cat([xs_vis[group_idx], xs_masked[group_idx]], dim=1),
+            self.channel_heads[group_idx][1](
+                self.channel_heads[group_idx][0](
+                    torch.cat([xs_vis[group_idx], xs_masked[group_idx]], dim=1)
+                ),
                 return_token_num=masked_ns[group_idx]
-            )
+            )            
             for group_idx in range(self.num_channel_groups)
         ]
 
@@ -483,6 +500,56 @@ class ChannelMae(nn.Module):
 
         return ys
 
+    def compute_labels(
+            self,
+            x: torch.Tensor,
+            mask: torch.Tensor
+    ) -> List[torch.Tensor]:
+        """
+        Get the masked patches from each channel group of the input image x.
+
+        Outputs a List[torch.Tensor] of shape [batch_size, num_masked_patches, patch_dim] for each group.
+        """
+        # convert input image to patches
+        x = self.patchify(x, squeeze_channel_dim=False)
+
+        mask_list = torch.split(mask, self.token_channel_group_splits, dim=1)
+        channel_inds = self.channel_group_start_inds
+
+        labels_list = []
+        for idx, group_mask in enumerate(mask_list):
+            group_dim = self.channel_partition[idx]
+            group_labels = x[...,channel_inds[idx]:channel_inds[idx+1]]
+            group_labels = group_labels[group_mask].reshape(
+                x.size(0), -1, self.patch_dim * group_dim
+            )
+            labels_list.append(group_labels)
+
+        return labels_list
+
+    def compute_train_loss(
+            self,
+            x: torch.Tensor,
+            mask: torch.Tensor,
+            loss_fn: Optional[Callable] = None
+    ) -> torch.Tensor:
+        """
+        Get the predictions and labels from each channel group, and apply loss_fn. Defaults to MSE
+        """
+        group_preds = self.forward(x, mask)
+        with torch.no_grad():
+            group_labels = self.compute_labels(x, mask)
+
+        loss = 0.0
+        if loss_fn is None:
+            loss_fn = nn.MSELoss()
+
+        # skip groups that have no masked tokens
+        for idx, pred in enumerate(group_preds):
+            loss += loss_fn(pred, group_labels[idx]) if pred.size(1) > 0 else 0.0
+
+        return loss
+
     @torch.jit.ignore
     def no_weight_decay(self):
         return {'pos_embed', 'cls_token', 'mask_token'}
@@ -517,7 +584,7 @@ class ChannelMae(nn.Module):
 
     @property
     def channel_partition(self):
-        return self.encoder.params.inp.channel_partition
+        return self.encoder.channel_partition
 
     @property
     def channel_group_start_inds(self):
@@ -545,8 +612,62 @@ class ChannelMae(nn.Module):
     def decoder_depth(self):
         return self.encoder.get_num_layers()
 
-    
+
+class SoftChannelMaeEncoder(ChannelMaeEncoder):
+    """
+    Encoder that pads the hard mask with a `soft_mask` up to a determined number of tokens.
+    """
+    def __init__(self, min_num_padding_tokens: int = 0, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.min_num_padding_tokens = min_num_padding_tokens
         
+    def forward(
+            self,
+            x: torch.Tensor,
+            mask: torch.Tensor,
+            padding_token: torch.Tensor,
+            soft_mask: Optional[torch.Tensor] = None,
+            min_num_padding_tokens: Optional[int] = None
+    ) -> torch.Tensor:
+
+        if min_num_padding_tokens is None:
+            min_num_padding_tokens = self.min_num_padding_tokens
+
+        return
+
+class SoftChannelMae(ChannelMae):
+    """
+    Variant of ChannelMae that can train and inference on variable number of visible tokens.
+
+    Besides the usual boolean mask that determines which patches / tokens are visible,
+    also accepts two new new args, `soft_mask` and `num_decode_tokens`.
+
+    The former is a soft mask that can fully reveal (value 0.0) or fully mask (value 1.0)
+    input tokens.
+    
+    The latter determines how many of the tokens interpolated with `soft_mask` will be
+    concatenated onto the visible inputs and therefore decoded to predicted values. During training,
+    this number may be << the number of masked tokens to promote computational efficiency.
+
+    Args:
+        - x : input image tensor [B, C, H, W] <torch.float>
+        - mask : hard masking tensor [B, num_tokens] <torch.bool>
+        - soft_mask : soft masking tensor [B, num_tokens] <torch.float>
+        - num_decode_tokens : int or None that determines how many tokens are concatenated to x_vis
+    """
+    
+
+class SoftInputChannelMae(SoftChannelMae):
+    """
+    Like SoftChannelMae, except the tokens that are predicted are an entirely new set of
+    `mask_tokens` (analogous to those in the hard ChannelMae). The soft_masked tokens are
+    not directly decoded; they merely provide a differentiable route for providing variable
+    numbers of visible tokens to the model.
+    """
+    pass
+
+
+   
     
 
 
