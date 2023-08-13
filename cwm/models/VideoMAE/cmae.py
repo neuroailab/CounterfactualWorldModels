@@ -623,7 +623,8 @@ class SoftChannelMaeEncoder(ChannelMaeEncoder):
             self,
             x: torch.Tensor,
             mask: torch.Tensor,
-            mask_token: torch.Tensor
+            mask_token: torch.Tensor,
+            decode_mask: Optional[torch.tensor] = None
     ) -> torch.Tensor:
 
         try:
@@ -635,6 +636,11 @@ class SoftChannelMaeEncoder(ChannelMaeEncoder):
         assert C == self.num_channels, (C, self.num_channels)        
 
         x, mask = self.tokenize(x, mask)
+        
+        if decode_mask is not None:
+            x = x[decode_mask].reshape(B, -1, x.size(-1))
+            mask = mask[decode_mask].reshape(B, -1)
+            
         x = interpolate_tensor_with_mask_token(x, mask, mask_token)
 
         for blk in self.blocks:
@@ -648,9 +654,10 @@ class SoftChannelMaeEncoder(ChannelMaeEncoder):
             x: torch.Tensor,
             mask: torch.Tensor,
             mask_token: torch.Tensor,
+            decode_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """Interpolates with the mask token using mask rather than indexing"""
-        x = self.forward_features(x, mask, mask_token)
+        x = self.forward_features(x, mask, mask_token, decode_mask)
         x = self.head(x)
         return x
 
@@ -695,34 +702,17 @@ class SoftChannelMae(ChannelMae):
     def _build_decoder(self, params: Dict = {}) -> nn.Module:
         return SoftChannelMaeDecoder(**params)
 
-    def _apply_channel_heads(
-            self,
-            x: torch.Tensor,
-            decode_mask: Optional[torch.Tensor] = None
-    ) -> List[torch.Tensor]:
+    def _apply_channel_heads(self, x: torch.Tensor) -> List[torch.Tensor]:
         """
         Apply the channel heads to the tokens after the decoder stage.
         """
-        if decode_mask is None:
-            xs = torch.split(x, self.token_channel_group_splits, dim=1)
-            return [
-                self.channel_heads[idx](xs[idx])
-                for idx in range(self.num_channel_groups)
-            ]
+        group_split_nums = self._num_decode_tokens_per_group or self.token_channel_group_splits
+        xs = torch.split(x, group_split_nums, dim=1)
+        return [
+            self.channel_heads[idx](xs[idx])
+            for idx in range(self.num_channel_groups)
+        ]
         
-        raise NotImplementedError("Have to figure out which tokens to decode with each head")
-
-    def _encode(
-            self,
-            x: torch.Tensor,
-            mask: torch.Tensor,
-            decode_mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-
-        if decode_mask is None:
-            return self.encoder(x, mask, self.mask_token)
-        raise NotImplementedError("What to do when decode mask is passed")
-
     def _recombine_channel_head_outputs(
             self,
             ys: List[torch.Tensor],
@@ -748,6 +738,7 @@ class SoftChannelMae(ChannelMae):
 
     def _reset_decode_mask(self) -> None:
         self.decode_mask, self.decode_inds = None, None
+        self._num_decode_tokens_per_group = None
 
     def _set_decode_mask(
             self,
@@ -780,6 +771,8 @@ class SoftChannelMae(ChannelMae):
                 group_inds + idx * self.num_tokens_per_channel_group # token inds
             ] = True
 
+        self._num_decode_tokens_per_group = num_decode_tokens
+
         return self.decode_mask
         
     def forward(
@@ -809,17 +802,18 @@ class SoftChannelMae(ChannelMae):
         ) if num_decode_tokens else None
 
         # encode
-        # TODO: use decode_mask and num_decode_tokens
-        x = self._encode(x, mask, decode_mask)
+        x = self.encoder(x, mask, mask_token=self.mask_token, decode_mask=decode_mask)
 
         # decode
         x = self.encoder_to_decoder(x)
         dec_pos_embed = self.pos_embed.type_as(x).to(x.device).clone().detach()
+        if decode_mask is not None:
+            dec_pos_embed = dec_pos_embed.expand(x.size(0), -1, -1)[decode_mask].reshape(*x.shape)
         x = x + dec_pos_embed
         x = self.decoder(x, mask=mask, filter_to_masked=filter_to_masked)
 
         # apply channel heads
-        ys = self._apply_channel_heads(x, decode_mask)
+        ys = self._apply_channel_heads(x)
 
         # return only masked tokens in each group or recombine
         if filter_to_masked:
