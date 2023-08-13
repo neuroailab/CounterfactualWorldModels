@@ -716,11 +716,10 @@ class SoftChannelMae(ChannelMae):
     def _recombine_channel_head_outputs(
             self,
             ys: List[torch.Tensor],
-            decode_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
 
-        if decode_mask is not None:
-            raise NotImplementedError("")
+        if self.decode_mask is not None:
+            raise ValueError("Cannot recombine tokens into a single output if there is a decode_mask set")
 
         B = ys[0].size(0)
         ys = [
@@ -822,8 +821,82 @@ class SoftChannelMae(ChannelMae):
             return ys
 
         # else stack the channels back together
-        return self._recombine_channel_head_outputs(ys, decode_mask)
-    
+        return self._recombine_channel_head_outputs(ys)
+
+    def compute_labels(
+            self,
+            x: torch.Tensor,
+            decode_mask: Optional[torch.Tensor] = None
+    ) -> List[torch.Tensor]:
+        """
+        Get the ground truth tokens from each channel group.
+
+        If decode_mask is not None, take only the ones corresponding to this mask.
+        """
+
+        # convert input image to patches
+        x = self.patchify(x, squeeze_channel_dim=False)
+        if decode_mask is not None:
+            group_decode_masks = torch.split(decode_mask, self.token_channel_group_splits, dim=1)
+
+        channel_inds = self.channel_group_start_inds
+
+        labels_list = []
+        for idx, group in enumerate(range(self.num_channel_groups)):
+            group_dim = self.channel_partition[idx]
+            group_labels = x[...,channel_inds[idx]:channel_inds[idx+1]]
+            group_labels = group_labels.reshape(
+                x.size(0), self.num_tokens_per_channel_group, self.patch_dim * group_dim
+            )
+            if decode_mask is not None:
+                group_labels = group_labels[group_decode_masks[idx]].reshape(
+                    x.size(0), self._num_decode_tokens_per_group[idx], -1
+                )
+            labels_list.append(group_labels)
+
+        return labels_list
+
+    def compute_train_loss(
+            self,
+            x: torch.Tensor,
+            mask: torch.Tensor,
+            num_decode_tokens: Optional[List[int]] = None,            
+            loss_fn: Optional[Callable] = None
+    ) -> torch.Tensor:
+        """
+        Get the decoded tokens from each channel group and compute MSE (or loss_fn) with labels.
+
+        The loss is weighted by the mask value: fully revealed patches have no loss computed on them.
+        """
+        group_preds = self.forward(
+            x=x,
+            mask=mask,
+            num_decode_tokens=num_decode_tokens,
+            filter_to_masked=False,
+            recombine_channel_groups=False
+        )
+        with torch.no_grad():
+            group_labels = self.compute_labels(x, self.decode_mask)
+
+        # the loss masks
+        if self.decode_mask is not None:
+            loss_masks = torch.split(
+                mask[self.decode_mask].reshape(x.size(0), -1), self._num_decode_tokens_per_group, dim=1)
+        else:
+            loss_masks = torch.split(mask, self.token_channel_group_splits, dim=1)
+
+        loss = 0.0
+        if loss_fn is None:
+            loss_fn = nn.MSELoss(reduction='none')
+
+        # weight loss by mask
+        for idx, pred in enumerate(group_preds):
+            group_loss_mask = loss_masks[idx]
+            loss_group = loss_fn(pred, group_labels[idx]).mean(-1) * group_loss_mask
+            num_masked = group_loss_mask.sum(1, True).clamp(min=1)
+            loss += ((loss_group.sum(1, True) / num_masked)).mean()
+            
+        return loss
     
 class SoftInputChannelMae(SoftChannelMae):
     """
