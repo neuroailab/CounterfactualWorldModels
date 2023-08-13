@@ -736,7 +736,7 @@ class SoftChannelMae(ChannelMae):
         )
 
     def _reset_decode_mask(self) -> None:
-        self.decode_mask, self.decode_inds = None, None
+        self.decode_mask, self.group_decode_inds = None, None
         self._num_decode_tokens_per_group = None
 
     def _set_decode_mask(
@@ -756,7 +756,10 @@ class SoftChannelMae(ChannelMae):
         group_masks = torch.split(reveal_weight, self.token_channel_group_splits, dim=1)
 
         self.group_decode_inds = [
-            torch.argsort(m + eps * torch.rand_like(m), dim=1, descending=True)[:, :num_decode_tokens[idx]]
+            torch.argsort(
+                m + eps * torch.rand_like(m) * (1 - m),
+                dim=1, descending=True
+            )[:, :num_decode_tokens[idx]]
             for idx, m in enumerate(group_masks)
         ]
 
