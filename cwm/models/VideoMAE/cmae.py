@@ -745,24 +745,68 @@ class SoftChannelMae(ChannelMae):
             self.patch_dim,
             self.num_channels
         )
-    
 
+    def _reset_decode_mask(self) -> None:
+        self.decode_mask, self.decode_inds = None, None
+
+    def _set_decode_mask(
+            self,
+            mask: torch.Tensor,
+            num_decode_tokens: List[int],
+            eps=1e-12
+    ) -> torch.Tensor:
+        """
+        Sample up to a fixed number of tokens, either overall or within each channel group.
+
+        Store the indices and get a (list of) boolean mask(s) for indexing.
+        """
+        assert len(num_decode_tokens) == self.num_channel_groups
+
+        reveal_weight = 1 - mask
+        group_masks = torch.split(reveal_weight, self.token_channel_group_splits, dim=1)
+
+        self.group_decode_inds = [
+            torch.argsort(m + eps * torch.rand_like(m), dim=1, descending=True)[:, :num_decode_tokens[idx]]
+            for idx, m in enumerate(group_masks)
+        ]
+
+        self.decode_mask = torch.zeros_like(mask).bool()
+        b_inds = torch.arange(mask.size(0), device=mask.device).long().unsqueeze(1)
+
+        # set mask value to true wherever inds sampled
+        for idx, group_inds in enumerate(self.group_decode_inds):
+            self.decode_mask[
+                b_inds.expand(-1, group_inds.size(-1)), # batch inds
+                group_inds + idx * self.num_tokens_per_channel_group # token inds
+            ] = True
+
+        return self.decode_mask
+        
     def forward(
             self,
             x: torch.Tensor,
             mask: torch.Tensor,
-            decode_mask: Optional[torch.Tensor] = None,
-            num_decode_tokens: Optional[int] = None,
+            num_decode_tokens: Optional[List[int]] = None,
             filter_to_masked: bool = False,
             recombine_channel_groups: bool = True
     ) -> Union[torch.Tensor, List[torch.Tensor]]:
         """
-        Do soft masking with mask (i.e. interpolation with the mask token),
-        then hard masking with decode_mask. Only the tokens to be decoded are passed through the model.
+        Do soft masking with mask (i.e. interpolation with the mask token).
+
+        Then, if num_decode_tokens is not None, randomly subsample the tokens up to
+        num_decode_tokens[group_idx] within each group.
+
+        Tokens with greater reveal weight are prioritized.
         """
 
         # optional preprocessing
         x = self.preprocess(x)
+
+        # get the decode mask
+        self._reset_decode_mask()
+        decode_mask = self._set_decode_mask(
+            mask.to(x.dtype), num_decode_tokens
+        ) if num_decode_tokens else None
 
         # encode
         # TODO: use decode_mask and num_decode_tokens
