@@ -5,6 +5,8 @@
 *.py#
 .ipynb_checkpoints
 
+notebooks/*
+
 # pytorch tensors and model weights
 *.pth
 *.pt

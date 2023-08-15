@@ -196,7 +196,56 @@ class PatchEmbed(nn.Module):
         else:
             x = self.proj(x).flatten(2).transpose(1, 2)
         return x
-    
+
+class ImagePatchEmbed(nn.Module):
+    """Patch embedding layer for image inputs. Uses Conv2d. For videos, use PatchEmbed"""
+    def __init__(
+            self,
+            patch_size: int = 16,
+            in_channels: int = 3,
+            embed_dim: int = 768
+    ) -> None:
+        
+        super().__init__()
+        self.patch_size = to_2tuple(patch_size)
+        self.ph, self.pw = self.patch_size
+        self.in_channels = self.num_channels = in_channels
+        self.embed_dim = embed_dim
+
+        # projection to tokens
+        self.proj = nn.Conv2d(
+            in_channels=self.in_channels,
+            out_channels=self.embed_dim,
+            kernel_size=self.patch_size,
+            stride=self.patch_size
+        )
+
+    def get_num_patches(self, image_size):
+        H, W = image_size
+        return (H // self.patch_size[0]) * (W // self.patch_size[1])
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        # handle videos with single frame
+        try:
+            B, C, H, W = x.shape
+        except:
+            assert (len(x.shape) == 5) and (x.shape[2] == 1), x.shape
+            x = x.squeeze(2)
+            B, C, H, W = x.shape
+
+        assert (
+            (H % self.patch_size[0] == 0)
+            and (W % self.patch_size[1] == 0)
+        ), (
+            f"Patch size {self.patch_size} does not evenly divide image dimensions ({H}, {W})"
+        )
+
+        x = self.proj(x).flatten(2).transpose(1, 2) # [B, num_patches, embed_dim]
+        return x
+        
+            
+        
 # sin-cos position encoding
 # https://github.com/jadore801120/attention-is-all-you-need-pytorch/blob/master/transformer/Models.py#L31
 def get_sinusoid_encoding_table(positions,
@@ -216,7 +265,34 @@ def get_sinusoid_encoding_table(positions,
         sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2]) # dim 2i 
         sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2]) # dim 2i+1 
 
-    return torch.FloatTensor(sinusoid_table).unsqueeze(0) 
+    return torch.FloatTensor(sinusoid_table).unsqueeze(0)
+
+def interpolate_tensor_with_mask_token(x, mask, mask_token, invert: bool = True):
+    """
+    Where mask == (0 if invert else 1), return x
+    Where mask == (1 if invert else 0), return mask_token
+    Linearly interpolate between
+    """
+    B, N, C = x.shape
+    assert mask.shape[1] == N
+    assert mask_token.shape[-1] == C
+
+    mask = mask.to(x).clip(min=0.0, max=1.0)
+    mask = (1 - mask) if invert else mask
+    mask = mask.unsqueeze(-1)
+
+    mask_token = mask_token.view(1, 1, C).expand(B, N, -1)
+    
+    start = mask_token
+    end = x
+
+    return start + mask * (end - start)
+
+def masked_tokens(x, mask):
+    B, _, C = tokens.shape
+    bool_mask = mask.unsqueeze(dim=-1).repeat(1, 1, C) > 0
+    masked = tokens[bool_mask].reshape(B, -1, C)
+    return masked
 
 def make_reconstruction_videos(ori_imgs,
                                bool_masked_pos,
