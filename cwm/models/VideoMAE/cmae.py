@@ -14,6 +14,7 @@ from cwm.models.patches import Patchify
 from cwm.models.VideoMAE.vmae import (PretrainVisionTransformerDecoder,
                                       trunc_normal_)
 from cwm.models.VideoMAE.conjoined_vmae import PaddedVisionTransformer
+from cwm.models.utils import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 from cwm.models.VideoMAE.utils import (
     Block,
@@ -32,6 +33,18 @@ def _int_to_two_tuple(val):
         return val
     assert isinstance(val, int), type(Val)
     return (val, val)
+
+def imagenet_normalize_image(x):
+    assert len(x.shape) == 4 and x.size(1) == 3, x.shape
+    mean = torch.tensor(IMAGENET_DEFAULT_MEAN).to(x).view(1, 3, 1, 1)
+    std = torch.tensor(IMAGENET_DEFAULT_STD).to(x).view(1, 3, 1, 1)
+    return (x - mean) / std
+
+class ImageNetNormalize(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self, x):
+        return imagenet_normalize_image(x)
 
 class ChannelMaeDecoder(nn.Module):
     """A stack of transformer layers that optionally returns only the last N tokens"""
@@ -551,6 +564,57 @@ class ChannelMae(nn.Module):
             loss += loss_fn(pred, group_labels[idx]) if pred.size(1) > 0 else 0.0
 
         return loss
+
+    def _add_visible_tokens(
+            self,
+            predicted_patches: torch.Tensor,
+            input_image: torch.Tensor,
+            mask: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Helper to place ground truth patches where the mask has value False.
+        """
+        B, N, P, C = predicted_patches.shape
+        input_image_patches = self.patchify(input_image, squeeze_channel_dim=False)
+        full_prediction = torch.zeros_like(input_image_patches)
+        visible_patches = input_image_patches[~mask]
+
+        full_prediction[~mask] = visible_patches.view(B, -1, P, C)
+        full_prediction[mask] = predicted_patches
+
+        return full_prediction
+
+    def predict_image(
+            self,
+            x: torch.Tensor,
+            mask: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Recombine the predictions from each channel group into a single multi-channel image.
+
+        Input patches that were visible (mask = False) will be equal to the ground truth.
+        """
+        B = x.shape[0]
+        ys = self.forward(x, mask)
+
+        mask_groups = torch.split(mask, self.token_channel_group_splits, dim=1)
+        group_inds = self.channel_group_start_inds
+
+        all_predicted_patches = torch.cat(
+            [
+                self._add_visible_tokens(
+                    predicted_patches=group_pred.reshape(
+                        B, -1, self.patch_dim, self.channel_partition[idx]
+                    ),
+                    input_image=x[:, group_inds[idx]:group_inds[idx+1]],
+                    mask=group_mask
+                )
+                for idx, (group_pred, group_mask) in enumerate(zip(ys, mask_groups))
+            ],
+            dim=-1
+        )
+
+        return self.encoder.patchifier.patches_to_video(all_predicted_patches)
 
     @torch.jit.ignore
     def no_weight_decay(self):
