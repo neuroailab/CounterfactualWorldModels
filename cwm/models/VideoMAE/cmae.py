@@ -11,40 +11,21 @@ from einops import rearrange
 from functools import partial
 
 from cwm.models.patches import Patchify
-from cwm.models.VideoMAE.vmae import (PretrainVisionTransformerDecoder,
-                                      trunc_normal_)
-from cwm.models.VideoMAE.conjoined_vmae import PaddedVisionTransformer
-from cwm.models.utils import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+from cwm.models.ChannelMAE.utils import ImageNetNormalize, ImagePatchEmbed
 
 from cwm.models.VideoMAE.utils import (
     Block,
     _cfg,
-    ImagePatchEmbed,
     get_sinusoid_encoding_table,
     interpolate_tensor_with_mask_token,
-    masked_tokens
+    masked_tokens,
+    trunc_normal_,
+    to_2tuple
 )
 
 _LayerNorm = partial(nn.LayerNorm, eps=1e-6)
 TwoTuple = Tuple[int, int]
 
-def _int_to_two_tuple(val):
-    if isinstance(val, tuple) and len(val) == 2:
-        return val
-    assert isinstance(val, int), type(Val)
-    return (val, val)
-
-def imagenet_normalize_image(x):
-    assert len(x.shape) == 4 and x.size(1) == 3, x.shape
-    mean = torch.tensor(IMAGENET_DEFAULT_MEAN).to(x).view(1, 3, 1, 1)
-    std = torch.tensor(IMAGENET_DEFAULT_STD).to(x).view(1, 3, 1, 1)
-    return (x - mean) / std
-
-class ImageNetNormalize(nn.Module):
-    def __init__(self):
-        super().__init__()
-    def forward(self, x):
-        return imagenet_normalize_image(x)
 
 class ChannelMaeDecoder(nn.Module):
     """A stack of transformer layers that optionally returns only the last N tokens"""
@@ -179,9 +160,9 @@ class ChannelMaeEncoder(ChannelMaeDecoder):
         )
 
         # input size and tokenization parameters
-        self.image_size = _int_to_two_tuple(image_size)
+        self.image_size = to_2tuple(image_size)
         self.in_channels = self.num_channels = in_channels
-        self.patch_size = _int_to_two_tuple(patch_size)
+        self.patch_size = to_2tuple(patch_size)
         self.ph, self.pw = self.patch_size
         self.embed_dim = embed_dim
 
@@ -803,10 +784,13 @@ class SoftChannelMae(ChannelMae):
         self.decode_mask, self.group_decode_inds = None, None
         self._num_decode_tokens_per_group = None
 
+    def _set_num_decode_tokens(self, num_decode_tokens) -> None:
+        self._num_decode_tokens_per_group = num_decode_tokens        
+
     def _set_decode_mask(
             self,
             mask: torch.Tensor,
-            num_decode_tokens: List[int],
+            num_decode_tokens: Union[int, List[int]],
             eps=1e-12
     ) -> torch.Tensor:
         """
@@ -814,6 +798,9 @@ class SoftChannelMae(ChannelMae):
 
         Store the indices and get a (list of) boolean mask(s) for indexing.
         """
+        if not hasattr(num_decode_tokens, '__len__'):
+            num_decode_tokens = [num_decode_tokens] * self.num_channel_groups
+            
         assert len(num_decode_tokens) == self.num_channel_groups
 
         reveal_weight = 1 - mask
@@ -837,26 +824,17 @@ class SoftChannelMae(ChannelMae):
                 group_inds + idx * self.num_tokens_per_channel_group # token inds
             ] = True
 
-        self._num_decode_tokens_per_group = num_decode_tokens
+        # for use in decoder
+        self._set_num_decode_tokens(num_decode_tokens)
 
         return self.decode_mask
-        
-    def forward(
+
+    def _encode(
             self,
             x: torch.Tensor,
             mask: torch.Tensor,
-            num_decode_tokens: Optional[List[int]] = None,
-            filter_to_masked: bool = False,
-            recombine_channel_groups: bool = True
-    ) -> Union[torch.Tensor, List[torch.Tensor]]:
-        """
-        Do soft masking with mask (i.e. interpolation with the mask token).
-
-        Then, if num_decode_tokens is not None, randomly subsample the tokens up to
-        num_decode_tokens[group_idx] within each group.
-
-        Tokens with greater reveal weight are prioritized.
-        """
+            num_decode_tokens: Optional[Union[int, List[int]]] = None
+    ) -> torch.Tensor:
 
         # optional preprocessing
         x = self.preprocess(x)
@@ -870,13 +848,42 @@ class SoftChannelMae(ChannelMae):
         # encode
         x = self.encoder(x, mask, mask_token=self.mask_token, decode_mask=decode_mask)
 
-        # decode
-        x = self.encoder_to_decoder(x)
+        return x
+
+    def _decode(self, x: torch.Tensor) -> torch.Tensor:
+
         dec_pos_embed = self.pos_embed.type_as(x).to(x.device).clone().detach()
-        if decode_mask is not None:
-            dec_pos_embed = dec_pos_embed.expand(x.size(0), -1, -1)[decode_mask].reshape(*x.shape)
+        if self.decode_mask is not None:
+            dec_pos_embed = dec_pos_embed.expand(x.size(0), -1, -1)[self.decode_mask].reshape(*x.shape)
         x = x + dec_pos_embed
-        x = self.decoder(x, mask=mask, filter_to_masked=filter_to_masked)
+        x = self.decoder(x, mask=mask, filter_to_masked=False)
+
+        return x
+    
+    def forward(
+            self,
+            x: torch.Tensor,
+            mask: torch.Tensor,
+            num_decode_tokens: Optional[Union[int, List[int]]] = None,
+            filter_to_masked: bool = False,
+            recombine_channel_groups: bool = True
+    ) -> Union[torch.Tensor, List[torch.Tensor]]:
+        """
+        Do soft masking with mask (i.e. interpolation with the mask token).
+
+        Then, if num_decode_tokens is not None, randomly subsample the tokens up to
+        num_decode_tokens[group_idx] within each group.
+
+        Tokens with greater reveal weight are prioritized.
+        """
+        # preprocess, set mask, encode
+        x = self._encode(x, mask, num_decode_tokens)
+
+        # encoder to decoder linear embedding
+        x = self.encoder_to_decoder(x)
+
+        # decode
+        x = self._decode(x)
 
         # apply channel heads
         ys = self._apply_channel_heads(x)
@@ -889,6 +896,11 @@ class SoftChannelMae(ChannelMae):
 
         # else stack the channels back together
         return self._recombine_channel_head_outputs(ys)
+
+    def _get_label_masks(self, decode_mask: Optional[torch.Tensor] = None) -> List[torch.Tensor]:
+        if decode_mask is not None:
+            return torch.split(decode_mask, self.token_channel_group_splits, dim=1)
+        return None
 
     def compute_labels(
             self,
@@ -903,8 +915,9 @@ class SoftChannelMae(ChannelMae):
 
         # convert input image to patches
         x = self.patchify(x, squeeze_channel_dim=False)
-        if decode_mask is not None:
-            group_decode_masks = torch.split(decode_mask, self.token_channel_group_splits, dim=1)
+
+        # get the label decode masks
+        group_decode_masks = self._get_label_masks(decode_mask)
 
         channel_inds = self.channel_group_start_inds
 
@@ -915,13 +928,22 @@ class SoftChannelMae(ChannelMae):
             group_labels = group_labels.reshape(
                 x.size(0), self.num_tokens_per_channel_group, self.patch_dim * group_dim
             )
-            if decode_mask is not None:
+            if group_decode_masks is not None:
                 group_labels = group_labels[group_decode_masks[idx]].reshape(
                     x.size(0), self._num_decode_tokens_per_group[idx], -1
                 )
             labels_list.append(group_labels)
 
         return labels_list
+
+    def _get_loss_masks(self, mask: torch.Tensor) -> List[torch.tensor]:
+        if self.decode_mask is not None:
+            loss_masks = torch.split(
+                mask[self.decode_mask].reshape(x.size(0), -1), self._num_decode_tokens_per_group, dim=1)
+        else:
+            loss_masks = torch.split(mask, self.token_channel_group_splits, dim=1)
+        
+        return loss_masks
 
     def compute_train_loss(
             self,
@@ -946,11 +968,7 @@ class SoftChannelMae(ChannelMae):
             group_labels = self.compute_labels(x, self.decode_mask)
 
         # the loss masks
-        if self.decode_mask is not None:
-            loss_masks = torch.split(
-                mask[self.decode_mask].reshape(x.size(0), -1), self._num_decode_tokens_per_group, dim=1)
-        else:
-            loss_masks = torch.split(mask, self.token_channel_group_splits, dim=1)
+        loss_masks = self._get_loss_masks(mask)
 
         loss = 0.0
         if loss_fn is None:
@@ -964,15 +982,76 @@ class SoftChannelMae(ChannelMae):
             loss += ((loss_group.sum(1, True) / num_masked)).mean()
             
         return loss
+
+    def predict_image(
+            self,
+            x: torch.Tensor,
+            mask: torch.Tensor,
+            replace_visible_patches_with_input: bool = True
+    ) -> None:
+
+        y_patches = self.forward(x, mask, filter_to_masked=False, recombine_channel_groups=True)
+
+        if not replace_visible_patches_with_input:
+            return self.encoder.patchifier.patches_to_video(y_patches)
+
+        x_patches = self.patchify(x, squeeze_channel_dim=False)
+        mask = mask.reshape(mask.shape[0], -1, 1, self.num_channel_groups).to(y_patches.dtype)
+        
+        y = y_patches * mask + x_patches * (1 - mask)
+        return self.encoder.patchifier.patches_to_video(y)
     
 class SoftInputChannelMae(SoftChannelMae):
     """
-    Like SoftChannelMae, except the tokens that are predicted are an entirely new set of
+    Like SoftChannelMae, except the tokens that are predicted include an entirely new set of
     `mask_tokens` (analogous to those in the hard ChannelMae). The soft_masked tokens are
     not directly decoded; they merely provide a differentiable route for providing variable
     numbers of visible tokens to the model.
     """
-    pass
+    def _build_decoder(self, params: Dict = {}) -> None:
+        return ChannelMaeDecoder(**params)
+    
+    def _init_mask_token(self) -> None:
+        """Separate 'soft' mask token for the encoder and 'hard' mask token for decoder"""
+        super(SoftInputChannelMae, self)._init_mask_token()
+        self.decoder_mask_token = nn.Parameter(torch.zeros(1, 1, self.decoder.embed_dim))
+        trunc_normal_(self.decoder_mask_token, std=0.02)
+
+    def _set_num_decode_tokens(self, num_decode_tokens) -> None:
+        """Ensures that all concatenated mask tokens will be decoded."""
+        self._num_decode_tokens_per_group = [self.num_tokens_per_channel_group] * self.num_channel_groups
+
+    def _get_label_masks(self, decode_mask):
+        """All parts of input image are labels. Overwrites decode_mask-dependent labels"""
+        return None
+
+    def _get_loss_masks(self, mask: torch.Tensor) -> List[torch.tensor]:
+        return torch.split(mask, self.token_channel_group_splits, dim=1)
+
+    def _decode(self, x: torch.Tensor) -> torch.Tensor:
+        """Concatenate mask tokens that are the outputs of the model"""
+
+        dec_pos_embed = self.pos_embed.type_as(x).to(x.device).clone().detach()
+        mask_token_w_pos_emb = self.decoder_mask_token + dec_pos_embed
+
+        # re-add pos embed to the encoder tokens
+        enc_pos_embed = dec_pos_embed
+        if self.decode_mask is not None:
+            enc_pos_embed = enc_pos_embed.expand(x.size(0), -1, -1)[self.decode_mask].reshape(*x.shape)
+
+        x = x + enc_pos_embed
+        x = torch.cat([x, mask_token_w_pos_emb], dim=1)
+
+        # only return the masked tokens
+        x = self.decoder(x, return_token_num=self.num_tokens)
+        
+        return x
+
+
+        
+
+
+    
 
 
    
