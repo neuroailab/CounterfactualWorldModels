@@ -1047,6 +1047,17 @@ class SoftInputChannelMae(SoftChannelMae):
         
         return x
 
+    def _recombine_channel_head_outputs(
+            self,
+            ys: List[torch.Tensor]
+    ) -> torch.Tensor:
+        """Bypass decode mask"""
+        decode_mask = self.decode_mask.clone() if self.decode_mask is not None else None
+        self.decode_mask = None
+        y = super()._recombine_channel_head_outputs(ys)
+        self.decode_mask = decode_mask
+        return y
+
 
         
 
