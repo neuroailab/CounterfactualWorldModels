@@ -629,6 +629,14 @@ class MixedMaskGenerator(nn.Module):
         masks = torch.stack(masks, -1).amin(-1) # min over masks to unmask up to sum(ratios)
         return masks
 
+class MixedFrameMaskingGenerator(nn.Module):
+    """Concatenate masks from multiple masking generators"""
+    # def __init__(
+    #         self,
+    #         masking_generator_list=MaskingGenerator,
+    pass
+
+
 class MixedClumpingMaskingGenerator(nn.Module):
 
     def __init__(self,
